@@ -1,3 +1,4 @@
+.env
 diana_training.jsonl
 diana_training_pending.json
 diana_business.log

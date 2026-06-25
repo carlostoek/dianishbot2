@@ -8,19 +8,24 @@ Requiere python-telegram-bot >= 21.0
 import asyncio
 import aiohttp
 import logging
+import os
 import random
 from datetime import datetime
+
+from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, ContextTypes, TypeHandler
 
 import training
 
+load_dotenv()
+
 # ═══════════════════════════════════════════════════════
 #  CONFIGURACIÓN
 # ═══════════════════════════════════════════════════════
 
-BOT_TOKEN      = "BOT_TOKEN_REMOVED"   # Crear un bot nuevo en @BotFather
-DEEPSEEK_KEY   = "DEEPSEEK_KEY_REMOVED"
+BOT_TOKEN      = os.getenv("BOT_TOKEN")
+DEEPSEEK_KEY   = os.getenv("DEEPSEEK_KEY")
 DEEPSEEK_URL   = "https://api.deepseek.com/v1/chat/completions"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
@@ -574,6 +579,16 @@ async def process_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════
 
 def main():
+    missing = [name for name, val in (
+        ("BOT_TOKEN", BOT_TOKEN),
+        ("DEEPSEEK_KEY", DEEPSEEK_KEY),
+    ) if not val]
+    if missing:
+        raise SystemExit(
+            f"Faltan variables de entorno: {', '.join(missing)}. "
+            "Copia .env.example a .env y configúralas."
+        )
+
     log.info("Diana Business Bot v2.0 iniciando...")
 
     training.configure(
