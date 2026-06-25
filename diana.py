@@ -549,7 +549,7 @@ topic = 1–3 palabras (ej: "precio_vip", "contenido", "horarios", "saludo", "ac
                     parsed = json.loads(raw)
                 except json.JSONDecodeError:
                     log.warning(f"DeepSeek ignoró JSON mode: {raw[:80]}")
-                    return raw.strip(), 100, "general"
+                    return None, 0, "general"
                 return (
                     parsed.get("response", "").strip(),
                     int(parsed.get("confidence", 100)),
