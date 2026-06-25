@@ -59,8 +59,8 @@ ADMIN_USER_ID             = 6181290784   # Diana — DM privado con el bot (/sta
 DIANA_ADMIN_CHAT_ID = ADMIN_USER_ID  # ← ID personal de Diana (mensaje @userinfobot)
 CONFIDENCE_THRESHOLD = 70            # respuestas < 70 → notificar a Diana
 APPROVAL_MODE = True                 # True = supervisado · False = autónomo
-APPROVAL_TIMEOUT = 5                 # minutos antes de auto-enviar si Diana no responde
 SILENCE_MINUTES = 2                  # espera en modo supervisado (Diana ya mira el chat)
+OBSERVE_UNAUTHORIZED = True          # escuchar chats no autorizados (sin auto-respuesta)
 DB_FILE = "diana_training.db"
 MAX_FEW_SHOTS = 3
 
@@ -119,6 +119,28 @@ def save_example(chat_id, username, context, response, confidence, topic) -> int
     return cur.lastrowid
 
 
+def save_observed_example(
+    chat_id: int, username: str, context: list[dict], diana_response: str,
+) -> int | None:
+    """Guarda un par usuario→Diana observado en chat no autorizado (sin respuesta del bot)."""
+    last_user = next(
+        (m["content"] for m in reversed(context) if m["role"] == "user"), "",
+    )
+    if not last_user.strip() or not diana_response.strip():
+        return None
+    topic = guess_topic(last_user)
+    cur = db.execute(
+        """INSERT INTO examples
+           (chat_id, username, ts, context, bot_response, confidence, topic, rating, status)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (chat_id, username, datetime.now().isoformat(),
+         json.dumps(context, ensure_ascii=False), diana_response, 100, topic,
+         "diana_manual", "reviewed"),
+    )
+    db.commit()
+    return cur.lastrowid
+
+
 def update_rating(example_id: int, rating: str, correction: str | None = None):
     db.execute(
         "UPDATE examples SET rating=?, correction=?, status='reviewed' WHERE id=?",
@@ -132,14 +154,14 @@ def get_few_shots(topic: str) -> list[dict]:
     rows = db.execute("""
         SELECT context, bot_response, correction, rating
         FROM examples
-        WHERE status='reviewed' AND rating IN ('good','corrected') AND topic=?
+        WHERE status='reviewed' AND rating IN ('good','corrected','diana_manual') AND topic=?
         ORDER BY id DESC LIMIT ?
     """, (topic, MAX_FEW_SHOTS)).fetchall()
     if not rows:
         rows = db.execute("""
             SELECT context, bot_response, correction, rating
             FROM examples
-            WHERE status='reviewed' AND rating IN ('good','corrected')
+            WHERE status='reviewed' AND rating IN ('good','corrected','diana_manual')
             ORDER BY id DESC LIMIT ?
         """, (MAX_FEW_SHOTS,)).fetchall()
     return [
@@ -404,8 +426,11 @@ pending_msg: dict[int, int] = {}
 # generación de timer por chat — evita respuestas duplicadas si el timer se reinicia
 reply_gen: dict[int, int] = {}
 
-# Borradores en espera de aprobación de Diana: {example_id: {chat_id, bc_id, username, response}}
+# Borradores en espera de aprobación de Diana: {example_id: {chat_id, bc_id, username, response, gen}}
 pending_approval: dict[int, dict] = {}
+
+# Metadatos de chats observados (no autorizados): {chat_id: {vip_id, username}}
+chat_meta: dict[int, dict] = {}
 
 # ID de Diana — se resuelve al activar business_connection
 diana_user_id: int | None = None
@@ -665,30 +690,6 @@ async def notify_diana_approval(
         log.error(f"notify_diana_approval error: {e}")
 
 
-async def approval_timeout(
-    bot, example_id: int, chat_id: int, bc_id: str, username: str,
-):
-    """Auto-envía el borrador si Diana no responde en APPROVAL_TIMEOUT minutos."""
-    await asyncio.sleep(APPROVAL_TIMEOUT * 60)
-    if example_id not in pending_approval:
-        return  # Diana ya lo procesó
-    pending = pending_approval.pop(example_id)
-    log.warning(f"Timeout aprobación ejemplo {example_id} — auto-enviando a {username}")
-    await simulate_typing(bot, pending["chat_id"], pending["bc_id"], pending["response"])
-    try:
-        await bot.send_message(
-            chat_id=pending["chat_id"],
-            text=pending["response"],
-            business_connection_id=pending["bc_id"],
-        )
-        history[pending["chat_id"]].append({"role": "assistant", "content": pending["response"]})
-        db.execute("UPDATE examples SET status='timeout' WHERE id=?", (example_id,))
-        db.commit()
-        log.info(f"Auto-enviado por timeout: ejemplo {example_id}")
-    except Exception as e:
-        log.error(f"approval_timeout send error: {e}")
-
-
 async def notify_diana(
     bot, example_id: int, username: str, context: list,
     response: str, confidence: int, topic: str,
@@ -745,24 +746,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await cq.edit_message_text("Este borrador ya expiró o fue procesado.")
                 return True
             pending = pending_approval.pop(ex_id)
-            update_rating(ex_id, "good")
-            await simulate_typing(
-                context.bot, pending["chat_id"], pending["bc_id"], pending["response"],
+            ok = await deliver_vip_response(
+                context.bot,
+                chat_id=pending["chat_id"],
+                bc_id=pending["bc_id"],
+                username=pending["username"],
+                gen=pending["gen"],
+                text=pending["response"],
             )
-            try:
-                await context.bot.send_message(
-                    chat_id=pending["chat_id"],
-                    text=pending["response"],
-                    business_connection_id=pending["bc_id"],
-                )
-                history[pending["chat_id"]].append(
-                    {"role": "assistant", "content": pending["response"]},
-                )
+            if ok:
+                update_rating(ex_id, "good")
                 await cq.edit_message_text(f"Enviado a {pending['username']}.")
                 log.info(f"Aprobado y enviado: ejemplo {ex_id} → {pending['username']}")
-            except Exception as e:
-                log.error(f"Error enviando aprobación {ex_id}: {e}")
-                await cq.edit_message_text(f"Error al enviar: {e}")
+            else:
+                await cq.edit_message_text(
+                    f"No enviado a {pending['username']}: el chat tiene un mensaje más reciente."
+                )
+                log.warning(f"Aprobación {ex_id} obsoleta — gen desactualizado")
 
         elif action == "fix":
             if ex_id not in pending_approval:
@@ -809,23 +809,25 @@ async def handle_diana_correction(update: Update, context: ContextTypes.DEFAULT_
 
     if ex_id in pending_approval:
         pending = pending_approval.pop(ex_id)
-        await simulate_typing(
-            context.bot, pending["chat_id"], pending["bc_id"], correction,
+        ok = await deliver_vip_response(
+            context.bot,
+            chat_id=pending["chat_id"],
+            bc_id=pending["bc_id"],
+            username=pending["username"],
+            gen=pending["gen"],
+            text=correction,
         )
-        try:
-            await context.bot.send_message(
-                chat_id=pending["chat_id"],
-                text=correction,
-                business_connection_id=pending["bc_id"],
-            )
-            history[pending["chat_id"]].append({"role": "assistant", "content": correction})
+        if ok:
             await msg.reply_text(
                 f"Correccion enviada a {pending['username']} y guardada como ejemplo de entrenamiento."
             )
             log.info(f"Corrección enviada (aprobación): ejemplo {ex_id} → {pending['username']}")
-        except Exception as e:
-            log.error(f"Error enviando corrección {ex_id}: {e}")
-            await msg.reply_text(f"Error al enviar al usuario: {e}")
+        else:
+            await msg.reply_text(
+                f"Corrección guardada pero no enviada a {pending['username']}: "
+                "el chat tiene un mensaje más reciente."
+            )
+            log.warning(f"Corrección {ex_id} obsoleta — gen desactualizado")
     else:
         await msg.reply_text(
             f"Corrección guardada (ejemplo {ex_id}). Se usará en respuestas futuras."
@@ -882,13 +884,11 @@ async def auto_reply(
             "bc_id": bc_id,
             "username": username,
             "response": response,
+            "gen": gen,
         }
         await notify_diana_approval(
             bot, example_id, username, history.get(chat_id, []),
             response, confidence, topic,
-        )
-        asyncio.create_task(
-            approval_timeout(bot, example_id, chat_id, bc_id, username),
         )
     else:
         if confidence < CONFIDENCE_THRESHOLD:
@@ -945,17 +945,39 @@ async def _handle_business_message(
         if edited:
             return
         log.info(f"Diana retomó con {chat_id}: {text[:60]}")
+        prior = history.get(chat_id, [])
         history.setdefault(chat_id, []).append({"role": "assistant", "content": text})
         if chat_id in timers:
             timers.pop(chat_id).cancel()
             log.info(f"Timer cancelado para {chat_id}")
+        if OBSERVE_UNAUTHORIZED and text.strip():
+            meta = chat_meta.get(chat_id, {})
+            vip = meta.get("vip_id")
+            if vip and not auth_users.is_authorized(vip, chat_id):
+                ex_id = save_observed_example(
+                    chat_id, meta.get("username", str(chat_id)), prior, text,
+                )
+                if ex_id:
+                    log.info(
+                        f"Ejemplo observado {ex_id} — Diana respondió en chat "
+                        f"no autorizado ({meta.get('username', chat_id)})"
+                    )
         return
 
-    if not vip_id or not auth_users.is_authorized(vip_id, chat_id):
-        log.info(
-            f"Mensaje ignorado — no autorizado | sender:{sender_id} "
-            f"chat:{chat_id} vip:{vip_id} edited:{edited}"
-        )
+    authorized = bool(vip_id and auth_users.is_authorized(vip_id, chat_id))
+
+    if not authorized:
+        if OBSERVE_UNAUTHORIZED and text.strip() and not edited:
+            log.info(f"OBSERVADO {username}: {text[:100]}")
+            history.setdefault(chat_id, []).append({"role": "user", "content": text})
+            chat_bc[chat_id] = bc_id
+            if vip_id:
+                chat_meta[chat_id] = {"vip_id": vip_id, "username": username}
+        else:
+            log.info(
+                f"Mensaje ignorado — no autorizado | sender:{sender_id} "
+                f"chat:{chat_id} vip:{vip_id} edited:{edited}"
+            )
         return
 
     if edited:
@@ -1108,8 +1130,9 @@ def main():
     )
     log.info(
         f"VIPs autorizados: {len(auth_users.get_authorized_ids())} | "
+        f"Observación no autorizados: {'sí' if OBSERVE_UNAUTHORIZED else 'no'} | "
         f"Modo: {modo} | Delay: {delay_info} | "
-        f"Timeout aprobación: {APPROVAL_TIMEOUT} min | "
+        f"Aprobación: manual (sin auto-envío) | "
         f"Umbral: {CONFIDENCE_THRESHOLD}%"
     )
 
