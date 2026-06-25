@@ -1,7 +1,6 @@
 .env
-diana_training.jsonl
-diana_training_pending.json
 diana_business.log
 diana_escalaciones.txt
 diana_authorized_users.json
 diana_state.json
+diana_training.db

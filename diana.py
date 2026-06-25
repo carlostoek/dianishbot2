@@ -11,15 +11,15 @@ import json
 import logging
 import os
 import random
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, ContextTypes, TypeHandler
 
 import auth_users
-import training
 
 load_dotenv()
 
@@ -53,14 +53,119 @@ TG_POLL_TIMEOUT    = 30    # long-polling; get_updates_read_timeout debe ser may
 LOG_FILE        = "diana_business.log"
 ESCALATE_FILE   = "diana_escalaciones.txt"
 
-TRAINING_ENABLED          = True
-TRAINING_REVIEW_ALL       = True
-TRAINING_FILE             = "diana_training.jsonl"
-TRAINING_PENDING_FILE     = "diana_training_pending.json"
-TRAINING_REVIEWER_ID      = 6181290784   # Diana — DM privado con el bot (/start)
-IMPLICIT_CORRECTION_SECS  = 600
-TRAINING_INJECT_ENABLED   = False
-TRAINING_PRE_APPROVAL     = True    # True: Diana aprueba antes de enviar al VIP
+ADMIN_USER_ID             = 6181290784   # Diana — DM privado con el bot (/start)
+
+# ══ CONFIG DE ENTRENAMIENTO ══════════════════════════════
+DIANA_ADMIN_CHAT_ID = ADMIN_USER_ID  # ← ID personal de Diana (mensaje @userinfobot)
+CONFIDENCE_THRESHOLD = 70            # respuestas < 70 → notificar a Diana
+APPROVAL_MODE = True                 # True = supervisado · False = autónomo
+APPROVAL_TIMEOUT = 5                 # minutos antes de auto-enviar si Diana no responde
+SILENCE_MINUTES = 2                  # espera en modo supervisado (Diana ya mira el chat)
+DB_FILE = "diana_training.db"
+MAX_FEW_SHOTS = 3
+
+# ══ CLASIFICADOR DE TEMA (para few-shots antes del LLM) ══
+TOPIC_MAP = {
+    "precio": ["precio", "costo", "cuánto", "cuanto", "pago", "cobro", "suscripción"],
+    "contenido": ["foto", "video", "contenido", "publicación", "pack", "material"],
+    "acceso": ["acceso", "link", "canal", "grupo", "entrar", "no puedo"],
+    "horarios": ["cuando", "cuándo", "horario", "hora", "disponible", "activa"],
+    "presentacion": ["hola", "saludos", "quién eres", "quien eres", "cuéntame"],
+}
+
+
+def guess_topic(text: str) -> str:
+    low = text.lower()
+    for topic, kws in TOPIC_MAP.items():
+        if any(k in low for k in kws):
+            return topic
+    return "general"
+
+
+# ══ SQLITE ══════════════════════════════════════════════
+def init_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS examples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER,
+            username TEXT,
+            ts TEXT,
+            context TEXT,
+            bot_response TEXT,
+            confidence INTEGER,
+            topic TEXT,
+            rating TEXT,
+            correction TEXT,
+            status TEXT DEFAULT 'pending'
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+db: sqlite3.Connection | None = None
+
+
+def save_example(chat_id, username, context, response, confidence, topic) -> int:
+    cur = db.execute(
+        """INSERT INTO examples
+           (chat_id, username, ts, context, bot_response, confidence, topic)
+           VALUES (?,?,?,?,?,?,?)""",
+        (chat_id, username, datetime.now().isoformat(),
+         json.dumps(context, ensure_ascii=False), response, confidence, topic),
+    )
+    db.commit()
+    return cur.lastrowid
+
+
+def update_rating(example_id: int, rating: str, correction: str | None = None):
+    db.execute(
+        "UPDATE examples SET rating=?, correction=?, status='reviewed' WHERE id=?",
+        (rating, correction, example_id),
+    )
+    db.commit()
+
+
+def get_few_shots(topic: str) -> list[dict]:
+    """Ejemplos aprobados/corregidos por Diana, ordenados del más reciente al más antiguo."""
+    rows = db.execute("""
+        SELECT context, bot_response, correction, rating
+        FROM examples
+        WHERE status='reviewed' AND rating IN ('good','corrected') AND topic=?
+        ORDER BY id DESC LIMIT ?
+    """, (topic, MAX_FEW_SHOTS)).fetchall()
+    if not rows:
+        rows = db.execute("""
+            SELECT context, bot_response, correction, rating
+            FROM examples
+            WHERE status='reviewed' AND rating IN ('good','corrected')
+            ORDER BY id DESC LIMIT ?
+        """, (MAX_FEW_SHOTS,)).fetchall()
+    return [
+        {"context": json.loads(r[0]), "response": r[1],
+         "correction": r[2], "rating": r[3]}
+        for r in rows
+    ]
+
+
+def build_few_shot_block(examples: list[dict]) -> str:
+    if not examples:
+        return ""
+    lines = ["\n\n---\nEJEMPLOS APRENDIDOS (sesiones anteriores — mantén este estilo):"]
+    for ex in examples:
+        last_user = next(
+            (m["content"] for m in reversed(ex["context"]) if m["role"] == "user"), "",
+        )
+        ideal = ex["correction"] or ex["response"]
+        lines.append(f"\n• Pregunta similar: {last_user[:120]}")
+        lines.append(f"  Respuesta ideal: {ideal}")
+        lines.append("---")
+    return "\n".join(lines)
+
+
+# ══ ESTADO DE CORRECCIÓN PENDIENTE ══════════════════════
+awaiting_correction: dict[int, int] = {}
 
 # ═══════════════════════════════════════════════════════
 #  PROMPT — pegar el contenido completo de prompt_diana_v1.1.md
@@ -296,11 +401,11 @@ chat_bc: dict[int, str] = {}
 # último message_id VIP pendiente de respuesta (para marcar leído al contestar)
 pending_msg: dict[int, int] = {}
 
-# último user_id VIP por chat (para entrenamiento/escalación)
-pending_vip_user: dict[int, int] = {}
-
 # generación de timer por chat — evita respuestas duplicadas si el timer se reinicia
 reply_gen: dict[int, int] = {}
+
+# Borradores en espera de aprobación de Diana: {example_id: {chat_id, bc_id, username, response}}
+pending_approval: dict[int, dict] = {}
 
 # ID de Diana — se resuelve al activar business_connection
 diana_user_id: int | None = None
@@ -366,56 +471,68 @@ def needs_escalation(text: str) -> str | None:
 #  LLAMADA AL LLM
 # ═══════════════════════════════════════════════════════
 
-async def get_diana_response(chat_id: int) -> str | None:
+async def get_diana_response(chat_id: int) -> tuple[str | None, int, str]:
+    """Devuelve (texto_respuesta, confidence 0-100, topic)."""
     msgs = history.get(chat_id, [])
     if not msgs:
-        return None
+        return None, 0, "general"
 
-    system_prompt = DIANA_SYSTEM_PROMPT
-    if TRAINING_INJECT_ENABLED:
-        last_user = next(
-            (m["content"] for m in reversed(msgs) if m["role"] == "user"), ""
-        )
-        system_prompt += training.build_examples_block(last_user)
+    last_user = next(
+        (m["content"] for m in reversed(msgs) if m["role"] == "user"), "",
+    )
+    topic_guess = guess_topic(last_user)
+    examples = get_few_shots(topic_guess)
+    few_shots = build_few_shot_block(examples)
 
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_KEY}",
-        "Content-Type": "application/json",
+    system = DIANA_SYSTEM_PROMPT + few_shots + """
+---
+FORMATO OBLIGATORIO: responde ÚNICAMENTE con JSON válido, sin texto extra ni backticks.
+{
+  "response": "tu respuesta aquí",
+  "confidence": 85,
+  "topic": "etiqueta_corta"
+}
+confidence = 0–100. 100 = respuesta perfecta y específica. 70 = aceptable pero genérica. <70 = no sabía bien qué responder.
+topic = 1–3 palabras (ej: "precio_vip", "contenido", "horarios", "saludo", "acceso").
+---"""
+
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            *msgs[-MAX_HISTORY:],
+        ],
+        "max_tokens": 300,
+        "temperature": 0.85,
+        "response_format": {"type": "json_object"},
     }
+    headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}", "Content-Type": "application/json"}
 
+    raw = ""
     try:
         async with aiohttp.ClientSession() as session:
-            for attempt, max_tokens in enumerate((400, 600), start=1):
-                payload = {
-                    "model": DEEPSEEK_MODEL,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        *msgs[-MAX_HISTORY:],
-                    ],
-                    "max_tokens": max_tokens,
-                    "temperature": 0.85,
-                }
-                async with session.post(
-                    DEEPSEEK_URL, json=payload, headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status != 200:
-                        log.error(f"DeepSeek {resp.status}: {await resp.text()}")
-                        return None
-                    data = await resp.json()
-                    content = (
-                        data["choices"][0]["message"].get("content") or ""
-                    ).strip()
-                    if content:
-                        return content
-                    log.warning(
-                        f"DeepSeek content vacío (intento {attempt}/{2}) "
-                        f"— reasoning consumió tokens"
-                    )
-        return None
+            async with session.post(
+                DEEPSEEK_URL, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    log.error(f"DeepSeek {resp.status}: {await resp.text()}")
+                    return None, 0, "general"
+                data = await resp.json()
+                raw = data["choices"][0]["message"]["content"].strip()
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    log.warning(f"DeepSeek ignoró JSON mode: {raw[:80]}")
+                    return raw.strip(), 100, "general"
+                return (
+                    parsed.get("response", "").strip(),
+                    int(parsed.get("confidence", 100)),
+                    parsed.get("topic", "general"),
+                )
     except Exception as e:
         log.error(f"DeepSeek error: {e}")
-        return None
+        return None, 0, "general"
 
 # ═══════════════════════════════════════════════════════
 #  PRESENCIA HUMANA
@@ -514,18 +631,220 @@ async def deliver_vip_response(
         return False
 
 # ═══════════════════════════════════════════════════════
+#  SISTEMA DE ENTRENAMIENTO
+# ═══════════════════════════════════════════════════════
+
+async def notify_diana_approval(
+    bot, example_id: int, username: str, context: list,
+    response: str, confidence: int, topic: str,
+):
+    """Envía el borrador a Diana ANTES de mandarlo al usuario."""
+    if not DIANA_ADMIN_CHAT_ID:
+        return
+    preview = "\n".join([
+        f"{'[Usuario]' if m['role'] == 'user' else '[Bot]'} {m['content'][:80]}"
+        for m in context[-4:]
+    ])
+    texto = (
+        f"Borrador listo para {username} (conf {confidence}% | tema: {topic})\n\n"
+        f"Contexto:\n{preview}\n\n"
+        f"Respuesta propuesta:\n{response}"
+    )
+    teclado = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Enviar tal cual", callback_data=f"a:approve:{example_id}"),
+        InlineKeyboardButton("Corregir antes", callback_data=f"a:fix:{example_id}"),
+    ]])
+    try:
+        await bot.send_message(
+            chat_id=DIANA_ADMIN_CHAT_ID,
+            text=texto,
+            reply_markup=teclado,
+        )
+        log.info(f"Borrador enviado a Diana: ejemplo {example_id} ({username})")
+    except Exception as e:
+        log.error(f"notify_diana_approval error: {e}")
+
+
+async def approval_timeout(
+    bot, example_id: int, chat_id: int, bc_id: str, username: str,
+):
+    """Auto-envía el borrador si Diana no responde en APPROVAL_TIMEOUT minutos."""
+    await asyncio.sleep(APPROVAL_TIMEOUT * 60)
+    if example_id not in pending_approval:
+        return  # Diana ya lo procesó
+    pending = pending_approval.pop(example_id)
+    log.warning(f"Timeout aprobación ejemplo {example_id} — auto-enviando a {username}")
+    await simulate_typing(bot, pending["chat_id"], pending["bc_id"], pending["response"])
+    try:
+        await bot.send_message(
+            chat_id=pending["chat_id"],
+            text=pending["response"],
+            business_connection_id=pending["bc_id"],
+        )
+        history[pending["chat_id"]].append({"role": "assistant", "content": pending["response"]})
+        db.execute("UPDATE examples SET status='timeout' WHERE id=?", (example_id,))
+        db.commit()
+        log.info(f"Auto-enviado por timeout: ejemplo {example_id}")
+    except Exception as e:
+        log.error(f"approval_timeout send error: {e}")
+
+
+async def notify_diana(
+    bot, example_id: int, username: str, context: list,
+    response: str, confidence: int, topic: str,
+):
+    """Envía a Diana la notificación con los botones de calificación."""
+    if not DIANA_ADMIN_CHAT_ID:
+        return
+    preview = "\n".join([
+        f"{'[Usuario]' if m['role'] == 'user' else '[Bot]'} {m['content'][:80]}"
+        for m in context[-4:]
+    ])
+    texto = (
+        f"Respuesta con confianza baja ({confidence}%)\n"
+        f"Usuario: {username} | Tema: {topic}\n\n"
+        f"Contexto:\n{preview}\n\n"
+        f"Lo que respondio el bot:\n{response[:250]}"
+    )
+    teclado = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Perfecta", callback_data=f"t:good:{example_id}"),
+        InlineKeyboardButton("Corregir", callback_data=f"t:fix:{example_id}"),
+        InlineKeyboardButton("Mala", callback_data=f"t:bad:{example_id}"),
+    ]])
+    try:
+        await bot.send_message(
+            chat_id=DIANA_ADMIN_CHAT_ID,
+            text=texto,
+            reply_markup=teclado,
+        )
+        log.info(f"Diana notificada: ejemplo {example_id} (conf={confidence}%)")
+    except Exception as e:
+        log.error(f"notify_diana error: {e}")
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Maneja callbacks de aprobación (a:) y retroalimentación post-envío (t:)."""
+    cq = update.callback_query
+    if not cq or not cq.data:
+        return False
+
+    parts = cq.data.split(":")
+    if len(parts) != 3:
+        return False
+
+    prefix, action, ex_id = parts[0], parts[1], int(parts[2])
+    if prefix not in ("a", "t"):
+        return False
+
+    await cq.answer()
+
+    # ══ MODO APROBACIÓN (a:) ═══════════════════════════════════════
+    if prefix == "a":
+        if action == "approve":
+            if ex_id not in pending_approval:
+                await cq.edit_message_text("Este borrador ya expiró o fue procesado.")
+                return True
+            pending = pending_approval.pop(ex_id)
+            update_rating(ex_id, "good")
+            await simulate_typing(
+                context.bot, pending["chat_id"], pending["bc_id"], pending["response"],
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=pending["chat_id"],
+                    text=pending["response"],
+                    business_connection_id=pending["bc_id"],
+                )
+                history[pending["chat_id"]].append(
+                    {"role": "assistant", "content": pending["response"]},
+                )
+                await cq.edit_message_text(f"Enviado a {pending['username']}.")
+                log.info(f"Aprobado y enviado: ejemplo {ex_id} → {pending['username']}")
+            except Exception as e:
+                log.error(f"Error enviando aprobación {ex_id}: {e}")
+                await cq.edit_message_text(f"Error al enviar: {e}")
+
+        elif action == "fix":
+            if ex_id not in pending_approval:
+                await cq.edit_message_text("Este borrador ya expiró o fue procesado.")
+                return True
+            pending = pending_approval[ex_id]
+            awaiting_correction[cq.from_user.id] = ex_id
+            await cq.edit_message_text(
+                f"Escribe la respuesta corregida para {pending['username']}:\n\n"
+                f"Borrador actual:\n{pending['response'][:200]}"
+            )
+
+    # ══ MODO AUTÓNOMO — retroalimentación post-envío (t:) ══════════
+    elif prefix == "t":
+        if action == "good":
+            update_rating(ex_id, "good")
+            await cq.edit_message_text(f"Guardado como ejemplo positivo (ID {ex_id}).")
+            log.info(f"Ejemplo {ex_id} → good")
+        elif action == "bad":
+            update_rating(ex_id, "bad")
+            await cq.edit_message_text(f"Marcado como mala respuesta (ID {ex_id}).")
+            log.info(f"Ejemplo {ex_id} → bad")
+        elif action == "fix":
+            awaiting_correction[cq.from_user.id] = ex_id
+            await cq.edit_message_text(
+                f"Esperando tu corrección para el ejemplo {ex_id}.\n\n"
+                "Escribe la respuesta ideal:"
+            )
+
+    return True
+
+
+async def handle_diana_correction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Captura correcciones de Diana — envía al usuario (aprobación) o solo guarda (autónomo)."""
+    msg = update.message
+    if not msg or not msg.text:
+        return False
+    if msg.from_user.id not in awaiting_correction:
+        return False
+
+    ex_id = awaiting_correction.pop(msg.from_user.id)
+    correction = msg.text.strip()
+    update_rating(ex_id, "corrected", correction)
+
+    if ex_id in pending_approval:
+        pending = pending_approval.pop(ex_id)
+        await simulate_typing(
+            context.bot, pending["chat_id"], pending["bc_id"], correction,
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=pending["chat_id"],
+                text=correction,
+                business_connection_id=pending["bc_id"],
+            )
+            history[pending["chat_id"]].append({"role": "assistant", "content": correction})
+            await msg.reply_text(
+                f"Correccion enviada a {pending['username']} y guardada como ejemplo de entrenamiento."
+            )
+            log.info(f"Corrección enviada (aprobación): ejemplo {ex_id} → {pending['username']}")
+        except Exception as e:
+            log.error(f"Error enviando corrección {ex_id}: {e}")
+            await msg.reply_text(f"Error al enviar al usuario: {e}")
+    else:
+        await msg.reply_text(
+            f"Corrección guardada (ejemplo {ex_id}). Se usará en respuestas futuras."
+        )
+        log.info(f"Corrección guardada (autónomo): ejemplo {ex_id} → '{correction[:60]}'")
+
+    return True
+
+# ═══════════════════════════════════════════════════════
 #  TIMER DE COBERTURA
 # ═══════════════════════════════════════════════════════
 
 async def auto_reply(
-    bot, chat_id: int, username: str, bc_id: str, gen: int, vip_user_id: int,
+    bot, chat_id: int, username: str, bc_id: str, gen: int,
 ):
-    """
-    Espera delay aleatorio, genera respuesta LLM.
-    Pre-aprobación: envía propuesta a Diana antes del VIP.
-    Post-envío: cadena humana directa al VIP + revisión después.
-    """
-    delay_sec = random.uniform(RESPONSE_DELAY_MIN * 60, RESPONSE_DELAY_MAX * 60)
+    if APPROVAL_MODE:
+        delay_sec = SILENCE_MINUTES * 60
+    else:
+        delay_sec = random.uniform(RESPONSE_DELAY_MIN * 60, RESPONSE_DELAY_MAX * 60)
     log.info(f"⏳ {username}: respuesta programada en {delay_sec / 60:.1f} min")
 
     try:
@@ -538,27 +857,9 @@ async def auto_reply(
 
     log.info(f"Cobertura activada para {username} ({chat_id})")
 
-    if not (TRAINING_ENABLED and TRAINING_PRE_APPROVAL):
-        msg_id = pending_msg.get(chat_id)
-        if msg_id:
-            await asyncio.sleep(random.uniform(0.3, 1.0))
-            await mark_as_read(bot, bc_id, chat_id, msg_id)
-        if reply_gen.get(chat_id) != gen:
-            return
-        await asyncio.sleep(random.uniform(1.5, 4.0))
-
-    response = await get_diana_response(chat_id)
+    response, confidence, topic = await get_diana_response(chat_id)
     if not response:
-        log.warning(f"Sin respuesta LLM para {username} ({chat_id})")
-        if TRAINING_ENABLED and TRAINING_PRE_APPROVAL:
-            user_msg = next(
-                (m["content"] for m in reversed(history.get(chat_id, [])) if m["role"] == "user"),
-                "",
-            )
-            await training.notify_llm_failure(
-                bot, chat_id=chat_id, bc_id=bc_id, username=username,
-                gen=gen, vip_user_id=vip_user_id, user_message=user_msg,
-            )
+        log.warning(f"Sin respuesta LLM para {chat_id}")
         if timers.get(chat_id) is asyncio.current_task():
             timers.pop(chat_id, None)
         return
@@ -566,44 +867,47 @@ async def auto_reply(
     if reply_gen.get(chat_id) != gen:
         return
 
-    user_msg = next(
-        (m["content"] for m in reversed(history[chat_id]) if m["role"] == "user"),
-        "",
+    example_id = save_example(
+        chat_id, username, history.get(chat_id, []),
+        response, confidence, topic,
     )
-    last_asst = next(
-        (m["content"] for m in reversed(history[chat_id]) if m["role"] == "assistant"),
-        None,
+    log.info(
+        f"Ejemplo {example_id} | conf={confidence}% | topic={topic} | "
+        f"modo={'supervisado' if APPROVAL_MODE else 'autónomo'}"
     )
 
-    try:
-        if TRAINING_ENABLED and TRAINING_PRE_APPROVAL:
-            await training.request_pre_approval(
-                bot,
-                chat_id=chat_id,
-                bc_id=bc_id,
-                username=username,
-                gen=gen,
-                vip_user_id=vip_user_id,
-                user_message=user_msg,
-                bot_response=response,
-                last_assistant=last_asst,
+    if APPROVAL_MODE:
+        pending_approval[example_id] = {
+            "chat_id": chat_id,
+            "bc_id": bc_id,
+            "username": username,
+            "response": response,
+        }
+        await notify_diana_approval(
+            bot, example_id, username, history.get(chat_id, []),
+            response, confidence, topic,
+        )
+        asyncio.create_task(
+            approval_timeout(bot, example_id, chat_id, bc_id, username),
+        )
+    else:
+        if confidence < CONFIDENCE_THRESHOLD:
+            asyncio.create_task(
+                notify_diana(
+                    bot, example_id, username, history.get(chat_id, []),
+                    response, confidence, topic,
+                ),
             )
-            log.info(f"Propuesta enviada a Diana para aprobación ({chat_id})")
-        else:
-            ok = await deliver_vip_response(
+        try:
+            await deliver_vip_response(
                 bot, chat_id=chat_id, bc_id=bc_id,
                 username=username, gen=gen, text=response,
             )
-            if ok and TRAINING_ENABLED:
-                await training.on_auto_reply_sent(
-                    bot, chat_id, vip_user_id, username,
-                    user_msg, response, last_asst,
-                )
-    except Exception as e:
-        log.error(f"Error en flujo de respuesta {chat_id}: {e}")
-    finally:
-        if timers.get(chat_id) is asyncio.current_task():
-            timers.pop(chat_id, None)
+        except Exception as e:
+            log.error(f"Error enviando a {chat_id}: {e}")
+
+    if timers.get(chat_id) is asyncio.current_task():
+        timers.pop(chat_id, None)
 
 # ═══════════════════════════════════════════════════════
 #  MENSAJES BUSINESS (VIP / Diana)
@@ -641,7 +945,6 @@ async def _handle_business_message(
         if edited:
             return
         log.info(f"Diana retomó con {chat_id}: {text[:60]}")
-        training.on_diana_manual_reply(chat_id, text)
         history.setdefault(chat_id, []).append({"role": "assistant", "content": text})
         if chat_id in timers:
             timers.pop(chat_id).cancel()
@@ -661,13 +964,9 @@ async def _handle_business_message(
 
     log.info(f"ENTRADA {username}: {text[:100]}")
 
-    training.cancel_dispatch_for_chat(chat_id)
-
     history.setdefault(chat_id, []).append({"role": "user", "content": text})
     chat_bc[chat_id] = bc_id
     pending_msg[chat_id] = msg.message_id
-    pending_vip_user[chat_id] = vip_id
-
     reason = needs_escalation(text)
     if reason:
         log_escalation(vip_id, username, reason, history[chat_id])
@@ -682,7 +981,7 @@ async def _handle_business_message(
     reply_gen[chat_id] = reply_gen.get(chat_id, 0) + 1
     gen = reply_gen[chat_id]
     task = asyncio.create_task(
-        auto_reply(context.bot, chat_id, username, bc_id, gen, vip_id)
+        auto_reply(context.bot, chat_id, username, bc_id, gen)
     )
     timers[chat_id] = task
 
@@ -694,20 +993,23 @@ async def process_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Router principal — despacha según tipo de update."""
 
     if update.callback_query:
+        if await handle_callback(update, context):
+            return
         if await auth_users.handle_callback(update, context):
             return
-        if await training.handle_callback(update, context):
+
+    if (
+        update.message
+        and not update.business_message
+        and update.message.chat.id == DIANA_ADMIN_CHAT_ID
+    ):
+        if await handle_diana_correction(update, context):
             return
 
     if update.message and not update.business_message:
-        reviewer_id = training.get_reviewer_id()
-        if reviewer_id and update.message.from_user.id == reviewer_id:
-            if update.message.text == "/entrenar":
-                await training.send_stats(context.bot, update.message.chat_id)
-                return
+        admin_id = auth_users.get_admin_id()
+        if admin_id and update.message.from_user.id == admin_id:
             if await auth_users.handle_admin_message(update, context):
-                return
-            if await training.handle_reviewer_message(update, context):
                 return
         elif update.message.from_user:
             sender = update.message.from_user.id
@@ -725,10 +1027,8 @@ async def process_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
             global diana_user_id
             connections[conn.id] = conn.user.id
             diana_user_id = conn.user.id
-            training.set_reviewer_id(conn.user.id)
             auth_users.set_admin_id(conn.user.id)
             _save_connections_state()
-            await training.flush_notify_queue(context.bot)
             log.info(f"Conexión activa: {conn.id} | Diana ID: {conn.user.id}")
         else:
             connections.pop(conn.id, None)
@@ -752,11 +1052,11 @@ async def process_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _post_init(app: Application) -> None:
     _load_connections_state()
-    if training.get_reviewer_id():
-        await training.flush_notify_queue(app.bot)
 
 
 def main():
+    global db
+
     missing = [name for name, val in (
         ("BOT_TOKEN", BOT_TOKEN),
         ("DEEPSEEK_KEY", DEEPSEEK_KEY),
@@ -767,32 +1067,19 @@ def main():
             "Copia .env.example a .env y configúralas."
         )
 
+    db = init_db()
+    log.info(f"DB de entrenamiento lista: {DB_FILE}")
     log.info("Diana Business Bot v2.0 iniciando...")
     _load_connections_state()
 
-    training.configure(
-        enabled=TRAINING_ENABLED,
-        review_all=TRAINING_REVIEW_ALL,
-        training_file=TRAINING_FILE,
-        pending_file=TRAINING_PENDING_FILE,
-        reviewer_id=TRAINING_REVIEWER_ID,
-        implicit_correction_secs=IMPLICIT_CORRECTION_SECS,
-        deepseek_key=DEEPSEEK_KEY,
-        deepseek_url=DEEPSEEK_URL,
-        deepseek_model=DEEPSEEK_MODEL,
-        log_escalation=log_escalation,
-        pre_approval=TRAINING_PRE_APPROVAL,
-        deliver_vip=deliver_vip_response,
-    )
-    if TRAINING_REVIEWER_ID:
-        training.set_reviewer_id(TRAINING_REVIEWER_ID)
-        auth_users.set_admin_id(TRAINING_REVIEWER_ID)
+    if ADMIN_USER_ID:
+        auth_users.set_admin_id(ADMIN_USER_ID)
 
     auth_users.configure(
         users_file=AUTH_USERS_FILE,
         max_users=AUTH_USERS_MAX,
         seed_user_ids=VIP_USERS_SEED,
-        admin_id=TRAINING_REVIEWER_ID,
+        admin_id=ADMIN_USER_ID,
     )
 
     app = (
@@ -813,10 +1100,17 @@ def main():
     # TypeHandler captura todos los updates, incluyendo business_*
     app.add_handler(TypeHandler(Update, process_update))
 
+    modo = "supervisado" if APPROVAL_MODE else "autónomo"
+    delay_info = (
+        f"{SILENCE_MINUTES} min"
+        if APPROVAL_MODE
+        else f"{RESPONSE_DELAY_MIN}–{RESPONSE_DELAY_MAX} min"
+    )
     log.info(
         f"VIPs autorizados: {len(auth_users.get_authorized_ids())} | "
-        f"Delay respuesta: {RESPONSE_DELAY_MIN}–{RESPONSE_DELAY_MAX} min | "
-        f"Entrenamiento: {'pre-aprobación' if TRAINING_PRE_APPROVAL else 'post-envío'}"
+        f"Modo: {modo} | Delay: {delay_info} | "
+        f"Timeout aprobación: {APPROVAL_TIMEOUT} min | "
+        f"Umbral: {CONFIDENCE_THRESHOLD}%"
     )
 
     app.run_polling(
