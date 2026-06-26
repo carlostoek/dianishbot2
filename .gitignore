@@ -1,13 +1,32 @@
+# Environment
 .env
-diana_business.log
-diana_escalaciones.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+env/
+
+# Runtime data
 diana_authorized_users.json
 diana_state.json
 diana_training.db
-.planning/tmp/
-
-# Telethon sessions & extractor outputs
+diana_training.db-shm
+diana_training.db-wal
 *.session
 exports/
-diana_session.session
-__pycache*
+
+# Logs
+diana_business.log
+diana_cobertura.log
+diana_escalaciones.txt
+
+# Tool / agent caches (local only)
+.atl/
+.grok/
+.planning/tmp/
+.planning/phases/
+.planning/quick/

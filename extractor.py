@@ -5,6 +5,11 @@ Diana Chat Extractor
 Standalone Telethon tool to pull complete chat histories from Diana's account
 and turn them into structured training data for the bot.
 
+SECURITY WARNING (high exposure risk per review Finding 3/6):
+ADMIN-ONLY tool for Diana account. Can bulk export ALL private histories + PII/training data + user_memory facts to exports/ and DB.
+Use exclusively on trusted/admin systems. Sensitive data exposure risk. No built-in auth or scrubbing.
+Prefer offline/airgapped execution. See also memory PII notes.
+
 Usage:
   python extractor.py list
   python extractor.py export --chat 123456789 --format training
@@ -14,6 +19,12 @@ Requires:
   API_ID and API_HASH in environment or .env (get them at https://my.telegram.org)
   The existing diana_session.session (or it will prompt for login once)
 """
+
+# SECURITY WARNING (high data exposure via extractor):
+# This tool can bulk-export full Telegram chat histories + derived facts (from
+# memory table / training examples). Contains sensitive PII and private user data.
+# Bulk export (--all) and DB import are for ADMIN/DIANA USE ONLY. Do not run
+# on untrusted hosts or share exports. No PII redaction applied. Use responsibly.
 
 import argparse
 import asyncio
