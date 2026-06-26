@@ -129,7 +129,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if prefix not in ("a", "t"):
         return False
 
-    await cq.answer()
+    if prefix == "a" and action == "approve":
+        await cq.answer("Enviando...")
+    else:
+        await cq.answer()
 
     # ══ MODO APROBACIÓN (a:) ═══════════════════════════════════════
     if prefix == "a":
@@ -137,6 +140,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if ex_id not in pending_approval:
                 await cq.edit_message_text("Este borrador ya expiró o fue procesado.")
                 return True
+            pending = pending_approval[ex_id]
+            await cq.edit_message_text(
+                f"Enviando a {pending['username']}...",
+                reply_markup=None,
+            )
             pending = pending_approval.pop(ex_id)
             ok = await deliver_vip_response(
                 context.bot,
