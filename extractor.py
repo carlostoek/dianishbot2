@@ -171,6 +171,7 @@ async def fetch_all_messages(client: TelegramClient, entity, limit: int | None) 
                     if sender:
                         sender_name = get_display_name(sender)
                 except Exception:
+                    # Sender puede fallar por permisos/privacidad en algunos mensajes; no es crítico para el export.
                     pass
 
                 out.append({
@@ -355,11 +356,28 @@ def import_examples_to_db(examples: list[dict], chat_id: int, username: str) -> 
     return inserted
 
 
-async def async_main() -> None:
+HELP_EPILOG = """
+ejemplos:
+  python extractor.py list
+  python extractor.py list --limit 20
+  python extractor.py export --chat 123456789 --format training
+  python extractor.py export --chat @username --format training --import-db --limit 500
+  python extractor.py export --all -y
+
+requisitos:
+  API_ID y API_HASH en .env — https://my.telegram.org
+  Sesión diana_session.session (login interactivo la primera vez)
+"""
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Extractor de chats de Telegram para entrenamiento de Diana"
+        prog="extractor.py",
+        description="Extractor de chats de Telegram para entrenamiento de Diana",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=HELP_EPILOG,
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", metavar="comando")
 
     # list
     p_list = subparsers.add_parser("list", help="Lista los chats/diálogos disponibles")
@@ -383,7 +401,16 @@ async def async_main() -> None:
     p_exp.add_argument("--import-db", action="store_true", help="Importar automáticamente los ejemplos de training al diana_training.db")
     p_exp.add_argument("-y", "--yes", action="store_true", help="No pedir confirmación")
 
+    return parser
+
+
+async def async_main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
+
+    if args.command is None:
+        parser.print_help()
+        return
 
     if args.command == "list":
         await cmd_list(args)
