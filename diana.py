@@ -73,6 +73,7 @@ from services.memory import MemoryService
 # (from-imports above make them available on module)
 
 from handlers.router import process_update, _post_init
+from handlers.error_handler import error_handler
 
 db: "sqlite3.Connection | None" = None
 memory_service: MemoryService | None = None
@@ -148,6 +149,11 @@ def main():
 
     # TypeHandler captura todos los updates, incluyendo business_*
     app.add_handler(TypeHandler(Update, process_update))
+
+    # Error handler global (PTB hardener requirement).
+    # Captura TODAS las excepciones no manejadas en handlers, jobs, etc.
+    # Debe registrarse DESPUÉS de los handlers normales.
+    app.add_error_handler(error_handler)
 
     modo = "supervisado" if APPROVAL_MODE else "autónomo"
     delay_info = (
