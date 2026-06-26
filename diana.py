@@ -20,9 +20,11 @@ from config import (
     BOT_TOKEN,
     CONFIDENCE_THRESHOLD,
     DB_FILE,
+    ANTHROPIC_KEY,
+    ANTHROPIC_MODEL,
     DEEPSEEK_KEY,
     DEEPSEEK_MODEL,
-    DEEPSEEK_URL,
+    LLM_PROVIDER,
     DIANA_ADMIN_CHAT_ID,
     DIANA_SYSTEM_PROMPT,
     ESCALATE_FILE,
@@ -102,14 +104,20 @@ log = logging.getLogger("diana")
 def main():
     global db, memory_service
 
+    llm_key_name = "ANTHROPIC_KEY" if LLM_PROVIDER == "anthropic" else "DEEPSEEK_KEY"
+    llm_key_val = ANTHROPIC_KEY if LLM_PROVIDER == "anthropic" else DEEPSEEK_KEY
     missing = [name for name, val in (
         ("BOT_TOKEN", BOT_TOKEN),
-        ("DEEPSEEK_KEY", DEEPSEEK_KEY),
+        (llm_key_name, llm_key_val),
     ) if not val]
     if missing:
         raise SystemExit(
             f"Faltan variables de entorno: {', '.join(missing)}. "
             "Copia .env.example a .env y configúralas."
+        )
+    if LLM_PROVIDER not in ("deepseek", "anthropic"):
+        raise SystemExit(
+            f"LLM_PROVIDER inválido: {LLM_PROVIDER!r}. Usa 'deepseek' o 'anthropic'."
         )
 
     db = init_db()
@@ -120,7 +128,8 @@ def main():
     llm_mod.memory_service = memory_service
     import handlers.timer as timer_mod; timer_mod.memory_service = memory_service
     log.info(f"DB de entrenamiento lista: {DB_FILE}")
-    log.info("Diana Business Bot v2.0 iniciando...")
+    llm_model = ANTHROPIC_MODEL if LLM_PROVIDER == "anthropic" else DEEPSEEK_MODEL
+    log.info(f"Diana Business Bot v2.0 iniciando... | LLM: {LLM_PROVIDER} ({llm_model})")
 
     if ADMIN_USER_ID:
         auth_users.set_admin_id(ADMIN_USER_ID)

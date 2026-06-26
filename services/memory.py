@@ -170,15 +170,16 @@ Claves válidas: name, occupation, location, interests, relationship, personalit
 Si no hay nada nuevo, responde {{}}.
 Ejemplo: {{"name": "Carlos", "interests": "gaming y música metal"}}"""
 
-        response = await llm_call_fn(
+        raw, _err = await llm_call_fn(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
             temperature=0.3,
             response_format={"type": "json_object"},
         )
 
-        if not response:
+        if not raw:
             return
+        response = raw
         try:
             facts = json.loads(response)
             for key, value in facts.items():
