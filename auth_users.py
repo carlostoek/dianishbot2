@@ -232,7 +232,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         await query.message.delete()
     except Exception:
-        pass
+        log.debug("No se pudo borrar el mensaje de lista de usuarios (puede ser ya eliminado)", exc_info=True)
     return True
 
 
