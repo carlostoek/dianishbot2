@@ -7,6 +7,7 @@ from services.delivery import deliver_vip_response
 from services.training import update_rating
 from services.memory import schedule_memory_extract
 from services import llm as llm_mod
+from services.llm import failure_label
 from state import history
 log = logging.getLogger("diana")
 
@@ -76,6 +77,35 @@ async def notify_diana_escalation(
         log.info(f"Escalación notificada a Diana: {username} ({user_id}) — {reason}")
     except Exception as e:
         log.error(f"notify_diana_escalation error: {e}")
+
+
+async def notify_diana_llm_failure(
+    bot, *, username: str, chat_id: int, context: list, failure,
+):
+    """Avisa a Diana cuando el LLM no pudo generar respuesta."""
+    if not DIANA_ADMIN_CHAT_ID:
+        return
+    preview = "\n".join([
+        f"{'[Usuario]' if m['role'] == 'user' else '[Bot]'} {m['content'][:80]}"
+        for m in context[-4:]
+    ])
+    texto = (
+        f"⚠️ El bot NO pudo responder a {username}\n"
+        f"Causa: {failure_label(failure.reason)}\n"
+        f"Intentos: {failure.attempts}\n"
+    )
+    if failure.detail:
+        texto += f"Detalle: {failure.detail[:200]}\n"
+    texto += f"\nContexto:\n{preview}\n\n"
+    texto += "Puedes responder manualmente en el chat del usuario."
+    try:
+        await bot.send_message(chat_id=DIANA_ADMIN_CHAT_ID, text=texto)
+        log.info(
+            f"Diana notificada de fallo LLM: {username} ({chat_id}) — "
+            f"{failure_label(failure.reason)}"
+        )
+    except Exception as e:
+        log.error(f"notify_diana_llm_failure error: {e}")
 
 
 async def notify_diana(

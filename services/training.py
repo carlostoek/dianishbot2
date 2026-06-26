@@ -1,8 +1,9 @@
 import sqlite3
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from config import DB_FILE, MAX_FEW_SHOTS, SKIP_OBSERVED_TOPICS
+from services.llm import failure_label
 
 import logging
 log = logging.getLogger("diana")
@@ -39,8 +40,114 @@ def init_db() -> sqlite3.Connection:
             status TEXT DEFAULT 'pending'
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS llm_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            username TEXT,
+            ts TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            attempts INTEGER NOT NULL,
+            detail TEXT,
+            topic_guess TEXT,
+            context TEXT
+        )
+    """)
     conn.commit()
     return conn
+
+
+def save_llm_failure(
+    chat_id: int,
+    username: str,
+    context: list[dict],
+    failure,
+    topic_guess: str,
+) -> int:
+    conn = _require_db()
+    cur = conn.execute(
+        """INSERT INTO llm_failures
+           (chat_id, username, ts, reason, attempts, detail, topic_guess, context)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (
+            chat_id, username, datetime.now().isoformat(),
+            failure.reason, failure.attempts, failure.detail or "",
+            topic_guess, json.dumps(context, ensure_ascii=False),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_llm_failure_stats(days: int = 7) -> dict:
+    """Agrega fallos LLM de los últimos N días."""
+    conn = _require_db()
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+
+    total = conn.execute(
+        "SELECT COUNT(*) FROM llm_failures WHERE ts >= ?", (since,),
+    ).fetchone()[0]
+
+    by_reason = conn.execute(
+        """SELECT reason, COUNT(*) FROM llm_failures
+           WHERE ts >= ? GROUP BY reason ORDER BY COUNT(*) DESC""",
+        (since,),
+    ).fetchall()
+
+    by_user = conn.execute(
+        """SELECT username, COUNT(*) FROM llm_failures
+           WHERE ts >= ? GROUP BY username ORDER BY COUNT(*) DESC""",
+        (since,),
+    ).fetchall()
+
+    recent = conn.execute(
+        """SELECT ts, username, reason, attempts, detail
+           FROM llm_failures WHERE ts >= ?
+           ORDER BY id DESC LIMIT 8""",
+        (since,),
+    ).fetchall()
+
+    return {
+        "days": days,
+        "total": total,
+        "by_reason": by_reason,
+        "by_user": by_user,
+        "recent": recent,
+    }
+
+
+def format_llm_failure_report(days: int = 7) -> str:
+    stats = get_llm_failure_stats(days)
+    lines = [f"Fallos LLM — últimos {stats['days']} días", "─" * 22]
+
+    if stats["total"] == 0:
+        lines.append("Sin fallos registrados en este periodo.")
+        return "\n".join(lines)
+
+    lines.append(f"Total: {stats['total']}")
+    lines.append("")
+    lines.append("Por causa:")
+    for reason, count in stats["by_reason"]:
+        lines.append(f"  • {failure_label(reason)}: {count}")
+
+    lines.append("")
+    lines.append("Por usuario:")
+    for username, count in stats["by_user"]:
+        lines.append(f"  • {username or '?'}: {count}")
+
+    if stats["recent"]:
+        lines.append("")
+        lines.append("Últimos:")
+        for ts, username, reason, attempts, detail in stats["recent"]:
+            ts_short = ts[:16].replace("T", " ")
+            lines.append(
+                f"  {ts_short} | {username or '?'} | "
+                f"{failure_label(reason)} | {attempts} intentos"
+            )
+            if detail:
+                lines.append(f"    {detail[:80]}")
+
+    return "\n".join(lines)
 
 
 def save_example(chat_id, username, context, response, confidence, topic) -> int:

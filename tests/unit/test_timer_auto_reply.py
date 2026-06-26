@@ -38,8 +38,13 @@ async def test_auto_reply_aborts_llm_retry_when_new_message_arrives(in_memory_tr
 
     with (
         patch("asyncio.sleep", new_callable=AsyncMock, side_effect=sleep_side_effect),
-        patch("services.llm.raw_call", new_callable=AsyncMock, return_value=None) as mock_raw,
+        patch(
+            "services.llm.raw_call", new_callable=AsyncMock,
+            return_value=(None, "error_http_api"),
+        ) as mock_raw,
         patch("handlers.timer.notify_diana_approval", new_callable=AsyncMock) as mock_notify,
+        patch("handlers.timer.notify_diana_llm_failure", new_callable=AsyncMock) as mock_fail_notify,
+        patch("handlers.timer.save_llm_failure") as mock_save_fail,
         patch("handlers.timer.save_example") as mock_save,
     ):
         task = asyncio.create_task(
@@ -62,8 +67,8 @@ async def test_auto_reply_delivers_after_llm_retry_succeeds(in_memory_training_d
     history[chat_id] = [{"role": "user", "content": "hola"}]
 
     payloads = [
-        None,
-        '{"response": "hey", "confidence": 85, "topic": "saludo"}',
+        (None, "error_http_api"),
+        ('{"response": "hey", "confidence": 85, "topic": "saludo"}', None),
     ]
 
     with (

@@ -248,6 +248,19 @@ async def handle_admin_message(
         await send_user_list(context.bot, msg.chat_id)
         return True
 
+    if msg.text and msg.text.startswith("/fallos"):
+        from services.training import format_llm_failure_report
+        parts = msg.text.split()
+        days = 7
+        if len(parts) > 1:
+            try:
+                days = max(1, min(int(parts[1]), 90))
+            except ValueError:
+                await msg.reply_text("Uso: /fallos [días]  (ej: /fallos 7)")
+                return True
+        await msg.reply_text(format_llm_failure_report(days))
+        return True
+
     if msg.forward_origin:
         origin = msg.forward_origin
         if origin.type == MessageOrigin.HIDDEN_USER:

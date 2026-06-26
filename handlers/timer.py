@@ -5,11 +5,11 @@ from config import (
     APPROVAL_MODE, SILENCE_MINUTES, RESPONSE_DELAY_MIN, RESPONSE_DELAY_MAX, CONFIDENCE_THRESHOLD,
 )
 from state import history, reply_gen, timers, pending_approval
-from services.llm import get_diana_response, raw_call
-from services.training import save_example
+from services.llm import FAIL_ABORTED, get_diana_response, raw_call
+from services.training import save_example, save_llm_failure
 from services.delivery import deliver_vip_response
 from services.memory import schedule_memory_extract
-from .callbacks import notify_diana_approval, notify_diana
+from .callbacks import notify_diana_approval, notify_diana, notify_diana_llm_failure
 # wired at runtime from diana main (preserves memory extract task from item2)
 memory_service = None
 log = logging.getLogger("diana")
@@ -34,11 +34,19 @@ async def auto_reply(
 
     log.info(f"Cobertura activada para {username} ({chat_id})")
 
-    response, confidence, topic = await get_diana_response(
+    response, confidence, topic, failure = await get_diana_response(
         chat_id,
         should_abort=lambda: reply_gen.get(chat_id) != gen,
     )
     if not response:
+        if failure and failure.reason != FAIL_ABORTED:
+            save_llm_failure(
+                chat_id, username, history.get(chat_id, []), failure, topic,
+            )
+            await notify_diana_llm_failure(
+                bot, username=username, chat_id=chat_id,
+                context=history.get(chat_id, []), failure=failure,
+            )
         if timers.get(chat_id) is asyncio.current_task():
             timers.pop(chat_id, None)
         return

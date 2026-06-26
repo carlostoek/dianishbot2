@@ -194,6 +194,19 @@ async def test_db(tmp_path):
             UNIQUE(user_id, key) ON CONFLICT REPLACE
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS llm_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            username TEXT,
+            ts TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            attempts INTEGER NOT NULL,
+            detail TEXT,
+            topic_guess TEXT,
+            context TEXT
+        )
+    """)
     conn.commit()
     yield conn
     conn.close()
