@@ -10,7 +10,7 @@ load_dotenv()
 BOT_TOKEN      = os.getenv("BOT_TOKEN")
 DEEPSEEK_KEY   = os.getenv("DEEPSEEK_KEY")
 DEEPSEEK_URL   = "https://api.deepseek.com/v1/chat/completions"
-DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEEPSEEK_MODEL = "deepseek-v4-pro"
 
 # Usuarios VIP iniciales (se migran a diana_authorized_users.json al primer arranque)
 VIP_USERS_SEED = {
