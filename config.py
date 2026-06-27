@@ -18,7 +18,7 @@ DEEPSEEK_MODEL = "deepseek-v4-pro"
 
 ANTHROPIC_KEY      = os.getenv("ANTHROPIC_KEY")
 ANTHROPIC_URL      = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_MODEL    = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+ANTHROPIC_MODEL    = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 ANTHROPIC_VERSION  = "2023-06-01"
 
 # Usuarios VIP iniciales (se migran a diana_authorized_users.json al primer arranque)
