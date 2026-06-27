@@ -7,6 +7,7 @@ from state import _load_connections_state, _save_connections_state, connections
 import state
 from .business import _handle_business_message
 from .callbacks import handle_callback, handle_diana_correction, handle_diana_note
+from .admin_menu import handle_admin_input
 log = logging.getLogger("diana")
 
 
@@ -32,6 +33,10 @@ async def process_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and not update.business_message:
         admin_id = auth_users.get_admin_id()
         if admin_id and update.message.from_user.id == admin_id:
+            # Menu button texts and new commands (/start, /menu, /estado, /ayuda)
+            if await handle_admin_input(update, context):
+                return
+            # Legacy slash commands (/usuarios, /notas, /fallos, etc.)
             if await auth_users.handle_admin_message(update, context):
                 return
         elif update.message.from_user:
