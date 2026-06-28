@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from config import DIANA_ADMIN_CHAT_ID
@@ -14,6 +15,13 @@ from services.llm import FAIL_ABORTED, failure_label, get_diana_response
 MAX_APPROVAL_VARIANTS = 10
 
 log = logging.getLogger("diana")
+
+
+@dataclass
+class RegenResult:
+    appended: bool = False
+    failure_note: str | None = None
+    blocked_reason: str | None = None  # "regenerating" | "stale" | "max_variants" | "expired"
 
 
 def _clamp_selected(pending: dict) -> int:
@@ -72,14 +80,98 @@ def _build_approval_keyboard(example_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([row1, row2])
 
 
-async def _refresh_approval_message(
-    cq, pending: dict, ex_id: int, context: list, *, failure_note: str | None = None,
-) -> None:
+def _approval_message_parts(
+    pending: dict, ex_id: int, context: list, *, failure_note: str | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
     texto = _format_approval_text(
         pending["username"], context, pending, failure_note=failure_note,
     )
     teclado = _build_approval_keyboard(ex_id)
+    return texto, teclado
+
+
+async def _edit_approval_message(
+    bot, chat_id: int, message_id: int,
+    pending: dict, ex_id: int, context: list, *, failure_note: str | None = None,
+) -> None:
+    texto, teclado = _approval_message_parts(
+        pending, ex_id, context, failure_note=failure_note,
+    )
+    await bot.edit_message_text(
+        texto, chat_id=chat_id, message_id=message_id, reply_markup=teclado,
+    )
+
+
+async def _refresh_approval_message(
+    cq, pending: dict, ex_id: int, context: list, *, failure_note: str | None = None,
+) -> None:
+    texto, teclado = _approval_message_parts(
+        pending, ex_id, context, failure_note=failure_note,
+    )
     await cq.edit_message_text(texto, reply_markup=teclado)
+
+
+async def _regen_approval_variant(ex_id: int) -> RegenResult:
+    if ex_id not in pending_approval:
+        return RegenResult(blocked_reason="expired")
+    pending = pending_approval[ex_id]
+    if pending.get("regenerating"):
+        return RegenResult(blocked_reason="regenerating")
+    if reply_gen.get(pending["chat_id"]) != pending["gen"]:
+        return RegenResult(blocked_reason="stale")
+    if len(pending["variants"]) >= MAX_APPROVAL_VARIANTS:
+        return RegenResult(blocked_reason="max_variants")
+
+    pending["regenerating"] = True
+    response = confidence = topic = failure = None
+    regen_error = False
+    try:
+        response, confidence, topic, failure = await get_diana_response(
+            pending["chat_id"],
+            should_abort=lambda: reply_gen.get(pending["chat_id"]) != pending["gen"],
+        )
+    except Exception as e:
+        log.error(f"Regen error ejemplo {ex_id}: {e}")
+        regen_error = True
+    finally:
+        if ex_id in pending_approval:
+            pending_approval[ex_id]["regenerating"] = False
+
+    if ex_id not in pending_approval:
+        return RegenResult(blocked_reason="expired")
+
+    pending = pending_approval[ex_id]
+    if regen_error:
+        return RegenResult(failure_note="⚠️ Regeneración falló: error inesperado")
+    if reply_gen.get(pending["chat_id"]) != pending["gen"]:
+        failure_note = (
+            "⚠️ Regeneración cancelada: el chat se actualizó mientras generaba."
+        )
+        log.warning(f"Regen abortado post-LLM ejemplo {ex_id}: gen desactualizado")
+        return RegenResult(failure_note=failure_note)
+    if not response:
+        if failure and failure.reason == FAIL_ABORTED:
+            failure_note = (
+                "⚠️ Regeneración cancelada: llegó un mensaje nuevo en el chat."
+            )
+            log.warning(f"Regen abortado ejemplo {ex_id}: {failure_label(FAIL_ABORTED)}")
+        elif failure:
+            failure_note = f"⚠️ Regeneración falló: {failure_label(failure.reason)}"
+            log.warning(
+                f"Regen fallido ejemplo {ex_id}: {failure_label(failure.reason)}"
+            )
+        else:
+            failure_note = "⚠️ Regeneración falló: sin respuesta"
+            log.warning(f"Regen fallido ejemplo {ex_id}: sin respuesta")
+        return RegenResult(failure_note=failure_note)
+
+    pending["variants"].append({
+        "response": response,
+        "confidence": confidence,
+        "topic": topic,
+    })
+    pending["selected"] = len(pending["variants"]) - 1
+    return RegenResult(appended=True)
 
 
 async def notify_diana_approval(
@@ -321,82 +413,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
 
         elif action == "regen":
-            if ex_id not in pending_approval:
+            result = await _regen_approval_variant(ex_id)
+            if result.blocked_reason == "expired":
                 await cq.answer()
                 await cq.edit_message_text("Este borrador ya expiró o fue procesado.")
                 return True
-            pending = pending_approval[ex_id]
-            if pending.get("regenerating"):
+            if result.blocked_reason == "regenerating":
                 await cq.answer("Ya generando...")
                 return True
-            if reply_gen.get(pending["chat_id"]) != pending["gen"]:
+            if result.blocked_reason == "stale":
                 await cq.answer("Chat actualizado — borrador obsoleto")
                 return True
-            if len(pending["variants"]) >= MAX_APPROVAL_VARIANTS:
+            if result.blocked_reason == "max_variants":
                 await cq.answer("Máximo de variantes alcanzado")
                 return True
-            pending["regenerating"] = True
             await cq.answer("Generando...")
-            response = confidence = topic = failure = None
-            regen_error = False
-            try:
-                response, confidence, topic, failure = await get_diana_response(
-                    pending["chat_id"],
-                    should_abort=lambda: reply_gen.get(pending["chat_id"]) != pending["gen"],
-                )
-            except Exception as e:
-                log.error(f"Regen error ejemplo {ex_id}: {e}")
-                regen_error = True
-            finally:
-                if ex_id in pending_approval:
-                    pending_approval[ex_id]["regenerating"] = False
-            if ex_id not in pending_approval:
-                return True
             pending = pending_approval[ex_id]
             chat_context = history.get(pending["chat_id"], [])
-            if regen_error:
-                failure_note = "⚠️ Regeneración falló: error inesperado"
-                await _refresh_approval_message(
-                    cq, pending, ex_id, chat_context, failure_note=failure_note,
-                )
-                return True
-            if reply_gen.get(pending["chat_id"]) != pending["gen"]:
-                failure_note = (
-                    "⚠️ Regeneración cancelada: el chat se actualizó mientras generaba."
-                )
-                log.warning(f"Regen abortado post-LLM ejemplo {ex_id}: gen desactualizado")
-                await _refresh_approval_message(
-                    cq, pending, ex_id, chat_context, failure_note=failure_note,
-                )
-                return True
-            if not response:
-                if failure and failure.reason == FAIL_ABORTED:
-                    failure_note = (
-                        "⚠️ Regeneración cancelada: llegó un mensaje nuevo en el chat."
-                    )
-                    log.warning(f"Regen abortado ejemplo {ex_id}: {failure_label(FAIL_ABORTED)}")
-                elif failure:
-                    failure_note = f"⚠️ Regeneración falló: {failure_label(failure.reason)}"
-                    log.warning(
-                        f"Regen fallido ejemplo {ex_id}: {failure_label(failure.reason)}"
-                    )
-                else:
-                    failure_note = "⚠️ Regeneración falló: sin respuesta"
-                    log.warning(f"Regen fallido ejemplo {ex_id}: sin respuesta")
-                await _refresh_approval_message(
-                    cq, pending, ex_id, chat_context, failure_note=failure_note,
-                )
-                return True
-            pending["variants"].append({
-                "response": response,
-                "confidence": confidence,
-                "topic": topic,
-            })
-            pending["selected"] = len(pending["variants"]) - 1
-            k = pending["selected"] + 1
-            n = len(pending["variants"])
-            await _refresh_approval_message(cq, pending, ex_id, chat_context)
-            log.info(f"Regenerado borrador ejemplo {ex_id} → variante {k}/{n}")
+            await _refresh_approval_message(
+                cq, pending, ex_id, chat_context, failure_note=result.failure_note,
+            )
+            if result.appended:
+                k = pending["selected"] + 1
+                n = len(pending["variants"])
+                log.info(f"Regenerado borrador ejemplo {ex_id} → variante {k}/{n}")
 
         elif action == "prev":
             if ex_id not in pending_approval:
