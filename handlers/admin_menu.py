@@ -1,6 +1,6 @@
 """Admin menu system for Diana bot.
 
-Provides a persistent ReplyKeyboardMarkup-based menu and new admin commands
+Provides a ReplyKeyboardMarkup-based menu and new admin commands
 (/start, /menu, /estado, /ayuda, /ocultar_menu). Integrates with the inline
 menu system in auth_users.py for structured navigation.
 
@@ -30,11 +30,10 @@ HIDE_KEYBOARD = ReplyKeyboardRemove()
 
 
 def build_main_keyboard() -> ReplyKeyboardMarkup:
-    """Build the persistent ReplyKeyboardMarkup for the admin menu."""
+    """Build the ReplyKeyboardMarkup for the admin menu."""
     return ReplyKeyboardMarkup(
         _MAIN_BUTTONS,
         resize_keyboard=True,
-        is_persistent=True,
         input_field_placeholder="Toca un boton o escribe / para comandos...",
     )
 
@@ -161,7 +160,7 @@ async def _route_slash_command(cmd: str, msg, context: ContextTypes.DEFAULT_TYPE
 async def _send_start(msg) -> None:
     """Welcome message with menu keyboard (first interaction).
 
-    Sends both the ReplyKeyboardMarkup (persistent) and the inline main menu.
+    Sends both the ReplyKeyboardMarkup and the inline main menu.
     """
     text = (
         "Hola, Diana. El bot esta activo.\n\n"
