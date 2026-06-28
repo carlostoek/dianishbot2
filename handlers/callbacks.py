@@ -13,6 +13,7 @@ from services import llm as llm_mod
 from services.llm import FAIL_ABORTED, failure_label, get_diana_response
 
 MAX_APPROVAL_VARIANTS = 10
+EXPIRED_DRAFT_TEXT = "Este borrador ya expiró o fue procesado."
 
 log = logging.getLogger("diana")
 
@@ -88,6 +89,64 @@ def _approval_message_parts(
     )
     teclado = _build_approval_keyboard(ex_id)
     return texto, teclado
+
+
+def _note_ctx_has_draft_coords(note_ctx: dict) -> bool:
+    return (
+        note_ctx.get("draft_chat_id") is not None
+        and note_ctx.get("draft_message_id") is not None
+    )
+
+
+async def _edit_draft_message_expired(
+    bot, draft_chat_id: int, draft_message_id: int,
+) -> bool:
+    try:
+        await bot.edit_message_text(
+            EXPIRED_DRAFT_TEXT,
+            chat_id=draft_chat_id,
+            message_id=draft_message_id,
+            reply_markup=None,
+        )
+        return True
+    except Exception as e:
+        log.error(
+            f"Error marcando borrador expirado (chat {draft_chat_id}, "
+            f"msg {draft_message_id}): {e}"
+        )
+        return False
+
+
+async def _restore_or_clear_note_prompt(bot, note_ctx: dict) -> None:
+    """Restore approval UI or mark expired on a draft left in note-prompt state."""
+    if not _note_ctx_has_draft_coords(note_ctx):
+        return
+    ex_id = note_ctx.get("example_id")
+    draft_chat_id = note_ctx["draft_chat_id"]
+    draft_message_id = note_ctx["draft_message_id"]
+    draft_still_pending = ex_id is not None and ex_id in pending_approval
+    if draft_still_pending:
+        pending = pending_approval[ex_id]
+        if not pending.get("regenerating"):
+            chat_context = history.get(pending["chat_id"], [])
+            try:
+                await _edit_approval_message(
+                    bot, draft_chat_id, draft_message_id,
+                    pending, ex_id, chat_context,
+                )
+            except Exception as e:
+                log.error(
+                    f"Error restaurando borrador tras nota cruzada ejemplo {ex_id}: {e}"
+                )
+    else:
+        await _edit_draft_message_expired(bot, draft_chat_id, draft_message_id)
+
+
+async def _clear_awaiting_note_with_prompt_restore(bot, user_id: int) -> None:
+    note_ctx = awaiting_note.get(user_id)
+    if note_ctx:
+        await _restore_or_clear_note_prompt(bot, note_ctx)
+    awaiting_note.pop(user_id, None)
 
 
 async def _edit_approval_message(
@@ -325,7 +384,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # ══ MODO APROBACIÓN (a:) ═══════════════════════════════════════
     if prefix == "a":
         if action == "approve":
-            awaiting_note.pop(cq.from_user.id, None)
+            await _clear_awaiting_note_with_prompt_restore(context.bot, cq.from_user.id)
             if ex_id not in pending_approval:
                 await cq.answer()
                 await cq.edit_message_text("Este borrador ya expiró o fue procesado.")
@@ -381,17 +440,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if pending.get("regenerating"):
                 await cq.answer("Espera a que termine la regeneración")
                 return True
+            if cq.from_user.id in awaiting_note:
+                await cq.answer(
+                    "Ya estás escribiendo una nota. Termina o usa /cancelar_nota."
+                )
+                return True
             awaiting_correction.pop(cq.from_user.id, None)
             awaiting_note[cq.from_user.id] = {
                 "user_id": pending["chat_id"],
                 "username": pending["username"],
                 "example_id": ex_id,
+                "draft_chat_id": cq.message.chat_id,
+                "draft_message_id": cq.message.message_id,
             }
+            stale_hint = ""
+            if reply_gen.get(pending["chat_id"]) != pending["gen"]:
+                stale_hint = (
+                    "\n\n⚠️ El chat tiene un mensaje más reciente — tras guardar la nota, "
+                    "el borrador puede quedar obsoleto."
+                )
             await cq.answer()
             await cq.edit_message_text(
                 f"✏️ Escribe tu nota para {pending['username']}:\n\n"
                 f"Se guardará en su perfil y se usará en todas las respuestas futuras.\n"
                 f"Escribe /cancelar_nota para cancelar (el borrador sigue pendiente)."
+                f"{stale_hint}"
             )
 
         elif action == "fix":
@@ -403,7 +476,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if pending.get("regenerating"):
                 await cq.answer("Espera a que termine la regeneración")
                 return True
-            awaiting_note.pop(cq.from_user.id, None)
+            await _clear_awaiting_note_with_prompt_restore(context.bot, cq.from_user.id)
             awaiting_correction[cq.from_user.id] = ex_id
             variant = _selected_variant(pending)
             await cq.answer()
@@ -444,6 +517,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await cq.edit_message_text("Este borrador ya expiró o fue procesado.")
                 return True
             pending = pending_approval[ex_id]
+            if pending.get("regenerating"):
+                await cq.answer("Espera a que termine la regeneración")
+                return True
             if pending["selected"] > 0:
                 pending["selected"] -= 1
                 await cq.answer()
@@ -459,6 +535,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await cq.edit_message_text("Este borrador ya expiró o fue procesado.")
                 return True
             pending = pending_approval[ex_id]
+            if pending.get("regenerating"):
+                await cq.answer("Espera a que termine la regeneración")
+                return True
             last = len(pending["variants"]) - 1
             if pending["selected"] < last:
                 pending["selected"] += 1
@@ -472,17 +551,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # ══ MODO AUTÓNOMO — retroalimentación post-envío (t:) ══════════
     elif prefix == "t":
         if action == "good":
-            awaiting_note.pop(cq.from_user.id, None)
+            await _clear_awaiting_note_with_prompt_restore(context.bot, cq.from_user.id)
             update_rating(ex_id, "good")
             await cq.edit_message_text(f"Guardado como ejemplo positivo (ID {ex_id}).")
             log.info(f"Ejemplo {ex_id} → good")
         elif action == "bad":
-            awaiting_note.pop(cq.from_user.id, None)
+            await _clear_awaiting_note_with_prompt_restore(context.bot, cq.from_user.id)
             update_rating(ex_id, "bad")
             await cq.edit_message_text(f"Marcado como mala respuesta (ID {ex_id}).")
             log.info(f"Ejemplo {ex_id} → bad")
         elif action == "fix":
-            awaiting_note.pop(cq.from_user.id, None)
+            await _clear_awaiting_note_with_prompt_restore(context.bot, cq.from_user.id)
             awaiting_correction[cq.from_user.id] = ex_id
             await cq.edit_message_text(
                 f"Esperando tu corrección para el ejemplo {ex_id}.\n\n"
@@ -503,6 +582,11 @@ async def handle_diana_correction(update: Update, context: ContextTypes.DEFAULT_
     stripped = msg.text.strip()
     if stripped.startswith("/"):
         return False
+
+    ex_id = awaiting_correction[msg.from_user.id]
+    if ex_id in pending_approval and pending_approval[ex_id].get("regenerating"):
+        await msg.reply_text("Espera a que termine la regeneración del borrador.")
+        return True
 
     ex_id = awaiting_correction.pop(msg.from_user.id)
     correction = stripped
@@ -560,13 +644,53 @@ async def handle_diana_note(
     if stripped.startswith("/"):
         base_cmd = stripped.split()[0].split("@")[0]
         if base_cmd == "/cancelar_nota":
-            note_ctx = awaiting_note.pop(msg.from_user.id)
+            note_ctx = awaiting_note[msg.from_user.id]
+            ex_id = note_ctx.get("example_id")
+            draft_chat_id = note_ctx.get("draft_chat_id")
+            draft_message_id = note_ctx.get("draft_message_id")
+            draft_still_pending = ex_id is not None and ex_id in pending_approval
+            has_coords = (
+                draft_chat_id is not None and draft_message_id is not None
+            )
+            regenerating = False
+            if has_coords:
+                if draft_still_pending:
+                    pending = pending_approval[ex_id]
+                    regenerating = pending.get("regenerating", False)
+                    if not regenerating:
+                        chat_context = history.get(pending["chat_id"], [])
+                        try:
+                            await _edit_approval_message(
+                                context.bot, draft_chat_id, draft_message_id,
+                                pending, ex_id, chat_context,
+                            )
+                        except Exception as e:
+                            log.error(
+                                f"Error restaurando borrador al cancelar nota "
+                                f"ejemplo {ex_id}: {e}"
+                            )
+                else:
+                    await _edit_draft_message_expired(
+                        context.bot, draft_chat_id, draft_message_id,
+                    )
+            awaiting_note.pop(msg.from_user.id)
             ex_ref = note_ctx.get("example_id")
             ex_line = f" (ejemplo {ex_ref})" if ex_ref is not None else ""
-            await msg.reply_text(
-                f"Nota cancelada. El borrador para {note_ctx['username']}{ex_line} "
-                "sigue pendiente."
-            )
+            if ex_id is not None and not draft_still_pending:
+                await msg.reply_text(
+                    f"Nota cancelada. El borrador{ex_line} para {note_ctx['username']} "
+                    "ya expiró o fue procesado."
+                )
+            elif draft_still_pending and regenerating:
+                await msg.reply_text(
+                    f"Nota cancelada. Espera a que termine la regeneración del borrador "
+                    f"para {note_ctx['username']}{ex_line}."
+                )
+            else:
+                await msg.reply_text(
+                    f"Nota cancelada. El borrador para {note_ctx['username']}{ex_line} "
+                    "sigue pendiente."
+                )
             return True
         return False
 
@@ -595,10 +719,100 @@ async def handle_diana_note(
         return True
 
     awaiting_note.pop(msg.from_user.id)
-    await msg.reply_text(
+
+    recovery_copy = (
         f"✓ Nota guardada para {note_ctx['username']}.\n"
-        f"Se aplica a partir de la próxima respuesta."
+        "Hubo un error al actualizar el borrador. "
+        "Revisa los borradores pendientes o pulsa 🔄 Regenerar."
     )
+    try:
+        ex_id = note_ctx.get("example_id")
+        draft_chat_id = note_ctx.get("draft_chat_id")
+        draft_message_id = note_ctx.get("draft_message_id")
+        has_draft_coords = (
+            ex_id is not None
+            and draft_chat_id is not None
+            and draft_message_id is not None
+        )
+        expired_copy = (
+            f"✓ Nota guardada para {note_ctx['username']}.\n"
+            "El borrador ya no está pendiente; la nota se aplica en la próxima respuesta."
+        )
+
+        if has_draft_coords and ex_id not in pending_approval:
+            await _edit_draft_message_expired(
+                context.bot, draft_chat_id, draft_message_id,
+            )
+            await msg.reply_text(expired_copy)
+        elif has_draft_coords:
+            result = await _regen_approval_variant(ex_id)
+            if result.blocked_reason == "expired" or ex_id not in pending_approval:
+                await _edit_draft_message_expired(
+                    context.bot, draft_chat_id, draft_message_id,
+                )
+                await msg.reply_text(expired_copy)
+            else:
+                pending = pending_approval[ex_id]
+                chat_context = history.get(pending["chat_id"], [])
+                edit_success = False
+                try:
+                    await _edit_approval_message(
+                        context.bot, draft_chat_id, draft_message_id,
+                        pending, ex_id, chat_context, failure_note=result.failure_note,
+                    )
+                    edit_success = True
+                except Exception as e:
+                    log.error(f"Error restaurando borrador tras nota ejemplo {ex_id}: {e}")
+
+                base = f"✓ Nota guardada para {note_ctx['username']}."
+                if result.appended:
+                    k = pending["selected"] + 1
+                    n = len(pending["variants"])
+                    if edit_success:
+                        detail = f"\nBorrador regenerado (variante {k}/{n})."
+                        log.info(
+                            f"Nota + regen borrador ejemplo {ex_id} → variante {k}/{n}"
+                        )
+                    else:
+                        detail = (
+                            "\nNo se pudo actualizar el mensaje del borrador. "
+                            "Pulsa 🔄 Regenerar en el borrador pendiente para ver "
+                            "la nueva variante."
+                        )
+                elif result.blocked_reason == "max_variants":
+                    detail = (
+                        "\nMáximo de variantes alcanzado — borrador restaurado "
+                        "sin regenerar."
+                    )
+                elif result.blocked_reason == "stale":
+                    detail = (
+                        "\nBorrador restaurado sin regenerar — el chat tiene un mensaje "
+                        "más reciente."
+                    )
+                elif result.blocked_reason == "regenerating":
+                    detail = (
+                        "\nBorrador restaurado — ya había una regeneración en curso. "
+                        "Pulsa 🔄 Regenerar cuando termine para aplicar la nota."
+                    )
+                elif result.failure_note:
+                    detail = (
+                        "\nNo se pudo regenerar el borrador; revisa el mensaje "
+                        "del borrador."
+                    )
+                else:
+                    detail = ""
+                await msg.reply_text(base + detail)
+        else:
+            await msg.reply_text(
+                f"✓ Nota guardada para {note_ctx['username']}.\n"
+                "Se aplica a partir de la próxima respuesta."
+            )
+    except Exception as e:
+        log.error(
+            f"Error post-guardado nota | usuario {note_ctx['user_id']}: {e}"
+        )
+        await msg.reply_text(recovery_copy)
+
     log.info(
         f"Nota manual guardada | usuario {note_ctx['user_id']} "
         f"({note_ctx['username']}): {stripped[:60]}"

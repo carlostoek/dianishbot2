@@ -676,3 +676,51 @@ async def test_a_regen_blocked_at_max_variants(
     mock_llm.assert_not_called()
     assert len(state.pending_approval[ex_id]["variants"]) == MAX_APPROVAL_VARIANTS
     update.callback_query.answer.assert_awaited_with("Máximo de variantes alcanzado")
+
+
+@pytest.mark.asyncio
+async def test_a_prev_blocked_while_regenerating(
+    make_mock_callback_update, make_context, pending_entry, admin_user,
+):
+    ex_id = 74
+    pending = pending_entry.copy()
+    pending["variants"] = [
+        {"response": "v1", "confidence": 90, "topic": "general"},
+        {"response": "v2", "confidence": 85, "topic": "general"},
+    ]
+    pending["selected"] = 1
+    pending["regenerating"] = True
+    state.pending_approval[ex_id] = pending
+    update = make_mock_callback_update(data=f"a:prev:{ex_id}", user=admin_user)
+
+    await handle_callback(update, make_context())
+
+    assert state.pending_approval[ex_id]["selected"] == 1
+    update.callback_query.answer.assert_awaited_with(
+        "Espera a que termine la regeneración"
+    )
+    update.callback_query.edit_message_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_next_blocked_while_regenerating(
+    make_mock_callback_update, make_context, pending_entry, admin_user,
+):
+    ex_id = 75
+    pending = pending_entry.copy()
+    pending["variants"] = [
+        {"response": "v1", "confidence": 90, "topic": "general"},
+        {"response": "v2", "confidence": 85, "topic": "general"},
+    ]
+    pending["selected"] = 0
+    pending["regenerating"] = True
+    state.pending_approval[ex_id] = pending
+    update = make_mock_callback_update(data=f"a:next:{ex_id}", user=admin_user)
+
+    await handle_callback(update, make_context())
+
+    assert state.pending_approval[ex_id]["selected"] == 0
+    update.callback_query.answer.assert_awaited_with(
+        "Espera a que termine la regeneración"
+    )
+    update.callback_query.edit_message_text.assert_not_awaited()
