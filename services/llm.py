@@ -341,15 +341,41 @@ REGLAS CRÍTICAS DE ESTILO (prioridad máxima):
 
     _trace_injected = None
     if trace.is_enabled():
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from config import DIANA_TIMEZONE
         from services import llm_settings
+        from services.schedule import format_mexico_datetime, resolve_current_activity
+
+        now = datetime.now(ZoneInfo(DIANA_TIMEZONE))
+        convo = messages[1:]
+
+        _trace_notes: list = []
+        _trace_auto_facts: dict = {}
+        if sandbox.is_active(chat_id):
+            _trace_notes = "[sandbox]"
+            _trace_auto_facts = "[sandbox]"
+        elif memory_service:
+            _trace_notes = memory_service._displayable_notes(chat_id)
+            facts = memory_service.get_facts(chat_id)
+            _trace_auto_facts = {k: v for k, v in facts.items() if k != "notes"}
+
         _trace_injected = {
             "profile": _trace_profile,
             "provider": llm_settings.get_provider(),
             "model": llm_settings.get_model(),
-            "reasoning_enabled": False,
             "memory_source": _trace_memory_source,
-            "system_prompt": system,
-            "history_messages": messages[1:],  # sin el system message, solo la conversación
+            "temporal": {
+                "datetime": format_mexico_datetime(now),
+                "activity": resolve_current_activity(now),
+            },
+            "notes": _trace_notes,
+            "auto_facts": _trace_auto_facts,
+            "few_shot_count": len(examples),
+            "few_shot_topic": topic_guess,
+            "system_prompt_len": len(DIANA_SYSTEM_PROMPT),
+            "history_msg_count": len(convo),
+            "history_chars": sum(len(m.get("content", "")) for m in convo),
         }
 
     attempts = max_retries if max_retries is not None else LLM_MAX_RETRIES
