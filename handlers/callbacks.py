@@ -1,6 +1,7 @@
 import logging
 from dataclasses import dataclass
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 from config import DIANA_ADMIN_CHAT_ID
 from state import (
@@ -35,6 +36,39 @@ def _clamp_selected(pending: dict) -> int:
 
 def _selected_variant(pending: dict) -> dict:
     return pending["variants"][_clamp_selected(pending)]
+
+
+async def _safe_cq_answer(
+    cq, text: str | None = None, *, show_alert: bool = False,
+) -> bool:
+    """Answer callback query; return False if Telegram already expired it."""
+    try:
+        if show_alert:
+            await cq.answer(text, show_alert=True)
+        elif text is not None:
+            await cq.answer(text)
+        else:
+            await cq.answer()
+        return True
+    except BadRequest as e:
+        msg = str(e).lower()
+        if "query is too old" in msg or "query id is invalid" in msg:
+            log.warning("Callback query expired before answer: %s", e)
+            return False
+        raise
+
+
+def _regen_blocked_reason(ex_id: int) -> str | None:
+    if ex_id not in pending_approval:
+        return "expired"
+    pending = pending_approval[ex_id]
+    if pending.get("regenerating"):
+        return "regenerating"
+    if reply_gen.get(pending["chat_id"]) != pending["gen"]:
+        return "stale"
+    if len(pending["variants"]) >= MAX_APPROVAL_VARIANTS:
+        return "max_variants"
+    return None
 
 
 def _format_approval_text(
@@ -181,16 +215,11 @@ async def _refresh_approval_message(
 
 
 async def _regen_approval_variant(ex_id: int) -> RegenResult:
-    if ex_id not in pending_approval:
-        return RegenResult(blocked_reason="expired")
-    pending = pending_approval[ex_id]
-    if pending.get("regenerating"):
-        return RegenResult(blocked_reason="regenerating")
-    if reply_gen.get(pending["chat_id"]) != pending["gen"]:
-        return RegenResult(blocked_reason="stale")
-    if len(pending["variants"]) >= MAX_APPROVAL_VARIANTS:
-        return RegenResult(blocked_reason="max_variants")
+    blocked = _regen_blocked_reason(ex_id)
+    if blocked:
+        return RegenResult(blocked_reason=blocked)
 
+    pending = pending_approval[ex_id]
     pending["regenerating"] = True
     response = confidence = topic = failure = None
     regen_error = False
@@ -507,21 +536,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
 
         elif action == "regen":
+            blocked = _regen_blocked_reason(ex_id)
+            if blocked == "expired":
+                await _safe_cq_answer(cq)
+                await cq.edit_message_text(EXPIRED_DRAFT_TEXT)
+                return True
+            if blocked == "regenerating":
+                await _safe_cq_answer(cq, "Ya generando...")
+                return True
+            if blocked == "stale":
+                await _safe_cq_answer(cq, "Chat actualizado — borrador obsoleto")
+                return True
+            if blocked == "max_variants":
+                await _safe_cq_answer(cq, "Máximo de variantes alcanzado")
+                return True
+            await _safe_cq_answer(cq, "Generando...")
             result = await _regen_approval_variant(ex_id)
-            if result.blocked_reason == "expired":
-                await cq.answer()
-                await cq.edit_message_text("Este borrador ya expiró o fue procesado.")
+            if result.blocked_reason == "expired" or ex_id not in pending_approval:
+                await cq.edit_message_text(EXPIRED_DRAFT_TEXT)
                 return True
-            if result.blocked_reason == "regenerating":
-                await cq.answer("Ya generando...")
-                return True
-            if result.blocked_reason == "stale":
-                await cq.answer("Chat actualizado — borrador obsoleto")
-                return True
-            if result.blocked_reason == "max_variants":
-                await cq.answer("Máximo de variantes alcanzado")
-                return True
-            await cq.answer("Generando...")
             pending = pending_approval[ex_id]
             chat_context = history.get(pending["chat_id"], [])
             await _refresh_approval_message(
