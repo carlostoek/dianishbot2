@@ -8,19 +8,17 @@ from dataclasses import dataclass
 
 from config import (
     ANTHROPIC_KEY,
-    ANTHROPIC_MODEL,
     ANTHROPIC_URL,
     ANTHROPIC_VERSION,
     DEEPSEEK_KEY,
-    DEEPSEEK_MODEL,
     DEEPSEEK_URL,
     DIANA_SYSTEM_PROMPT,
     LLM_MAX_RETRIES,
-    LLM_PROVIDER,
     LLM_RETRY_DELAY_SEC,
     MAX_HISTORY,
     TOPIC_MAP,
 )
+from services import llm_settings
 from services.schedule import build_temporal_context_block
 from state import history
 
@@ -86,7 +84,7 @@ MEMORY_FACTS_SCHEMA = {
 
 
 def _provider_label() -> str:
-    return "Anthropic" if LLM_PROVIDER == "anthropic" else "DeepSeek"
+    return "Anthropic" if llm_settings.get_provider() == "anthropic" else "DeepSeek"
 
 
 def _split_messages_for_anthropic(messages: list[dict]) -> tuple[str | None, list[dict]]:
@@ -156,12 +154,13 @@ def _try_parse_llm_json(raw: str) -> tuple[dict | None, str | None]:
 async def _raw_call_deepseek(
     messages: list[dict],
     *,
+    model: str,
     max_tokens: int,
     temperature: float,
     response_format: dict | None,
 ) -> tuple[str | None, str | None]:
     payload = {
-        "model": DEEPSEEK_MODEL,
+        "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -178,7 +177,7 @@ async def _raw_call_deepseek(
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    log.error(f"DeepSeek HTTP {resp.status}: {body[:200]}")
+                    log.error(f"{_provider_label()} HTTP {resp.status}: {body[:200]}")
                     return None, FAIL_HTTP
                 data = await resp.json()
                 content = data["choices"][0]["message"]["content"]
@@ -186,16 +185,17 @@ async def _raw_call_deepseek(
                     return None, FAIL_EMPTY_API
                 return content.strip(), None
     except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as e:
-        log.error(f"DeepSeek red/timeout: {type(e).__name__}: {e}")
+        log.error(f"{_provider_label()} red/timeout: {type(e).__name__}: {e}")
         return None, FAIL_NETWORK
     except Exception as e:
-        log.error(f"DeepSeek error inesperado: {type(e).__name__}: {e}")
+        log.error(f"{_provider_label()} error inesperado: {type(e).__name__}: {e}")
         return None, FAIL_NETWORK
 
 
 async def _raw_call_anthropic(
     messages: list[dict],
     *,
+    model: str,
     max_tokens: int,
     temperature: float,
     response_format: dict | None,
@@ -205,7 +205,7 @@ async def _raw_call_anthropic(
         return None, FAIL_EMPTY_API
 
     payload: dict = {
-        "model": ANTHROPIC_MODEL,
+        "model": model,
         "messages": convo,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -230,7 +230,7 @@ async def _raw_call_anthropic(
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    log.error(f"Anthropic HTTP {resp.status}: {body[:200]}")
+                    log.error(f"{_provider_label()} HTTP {resp.status}: {body[:200]}")
                     return None, FAIL_HTTP
                 data = await resp.json()
                 text_parts = [
@@ -243,10 +243,10 @@ async def _raw_call_anthropic(
                     return None, FAIL_EMPTY_API
                 return content, None
     except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as e:
-        log.error(f"Anthropic red/timeout: {type(e).__name__}: {e}")
+        log.error(f"{_provider_label()} red/timeout: {type(e).__name__}: {e}")
         return None, FAIL_NETWORK
     except Exception as e:
-        log.error(f"Anthropic error inesperado: {type(e).__name__}: {e}")
+        log.error(f"{_provider_label()} error inesperado: {type(e).__name__}: {e}")
         return None, FAIL_NETWORK
 
 
@@ -254,12 +254,21 @@ async def raw_call(
     messages: list[dict], max_tokens: int = 200, temperature: float = 0.3, response_format: dict | None = None
 ) -> tuple[str | None, str | None]:
     """HTTP al proveedor LLM activo. Devuelve (contenido, código_fallo). código_fallo es None si OK."""
-    if LLM_PROVIDER == "anthropic":
+    provider, model = llm_settings.get_active_config()
+    if provider == "anthropic":
         return await _raw_call_anthropic(
-            messages, max_tokens=max_tokens, temperature=temperature, response_format=response_format,
+            messages,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
         )
     return await _raw_call_deepseek(
-        messages, max_tokens=max_tokens, temperature=temperature, response_format=response_format,
+        messages,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        response_format=response_format,
     )
 
 

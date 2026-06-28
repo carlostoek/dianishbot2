@@ -22,6 +22,7 @@ log = logging.getLogger("diana")
 _MAIN_BUTTONS = [
     ["📋 Menu", "👥 Usuarios"],
     ["📊 Estado", "📈 Fallos"],
+    ["🤖 LLM"],
     ["❓ Ayuda"],
 ]
 
@@ -45,6 +46,7 @@ _MENU_TEXT_MAP: dict[str, str] = {
     "Usuarios": "usuarios",
     "Estado": "estado",
     "Fallos": "fallos",
+    "LLM": "llm",
     "Ayuda": "ayuda",
 }
 
@@ -103,7 +105,11 @@ async def _route_menu_action(action: str, msg, context: ContextTypes.DEFAULT_TYP
         return True
 
     if action == "estado":
-        await auth_users.send_main_menu(context.bot, msg.chat_id)
+        await auth_users.send_estado(context.bot, msg.chat_id)
+        return True
+
+    if action == "llm":
+        await auth_users.send_llm_menu(context.bot, msg.chat_id)
         return True
 
     if action == "fallos":
@@ -129,32 +135,7 @@ async def _route_slash_command(cmd: str, msg, context: ContextTypes.DEFAULT_TYPE
         return True
 
     if cmd == "/estado":
-        from config import (
-            APPROVAL_MODE, CONFIDENCE_THRESHOLD, LLM_PROVIDER,
-            OBSERVE_UNAUTHORIZED, RESPONSE_DELAY_MAX, RESPONSE_DELAY_MIN,
-            SILENCE_MINUTES,
-        )
-        from state import pending_approval
-
-        mode = "Supervisado" if APPROVAL_MODE else "Autonomo"
-        delay = (
-            f"{SILENCE_MINUTES} min (supervisado)"
-            if APPROVAL_MODE
-            else f"{RESPONSE_DELAY_MIN}-{RESPONSE_DELAY_MAX} min"
-        )
-        vip_count = len(auth_users.get_authorized_ids())
-        pending = len(pending_approval)
-
-        text = (
-            f"*Estado del Bot*\n\n"
-            f"*Modo:* {mode}\n"
-            f"*Delay:* {delay}\n"
-            f"*Umbral confianza:* {CONFIDENCE_THRESHOLD}%\n"
-            f"*VIPs autorizados:* {vip_count}\n"
-            f"*Borradores pendientes:* {pending}\n"
-            f"*Observar no auth:* {'Si' if OBSERVE_UNAUTHORIZED else 'No'}\n"
-            f"*LLM:* {LLM_PROVIDER}"
-        )
+        text = auth_users.build_estado_text()
         await msg.reply_text(
             text, parse_mode="Markdown",
             reply_markup=auth_users._build_back_to_menu_keyboard(),

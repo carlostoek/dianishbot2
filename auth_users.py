@@ -121,6 +121,7 @@ def _format_user_line(index: int, entry: dict) -> str:
 # ═══════════════════════════════════════════════════════
 
 _MAX_NAME_LEN = 18
+ESTADO_TITLE = "📊 *Estado del Bot*"
 
 
 def _build_main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -129,9 +130,52 @@ def _build_main_menu_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("👥 Usuarios VIP", callback_data="au:list")],
         [InlineKeyboardButton("📊 Estado del Bot", callback_data="au:estado")],
         [InlineKeyboardButton("📈 Fallos del LLM", callback_data="au:fallos")],
+        [InlineKeyboardButton("🤖 Config LLM", callback_data="au:llm")],
         [InlineKeyboardButton("❓ Ayuda", callback_data="au:ayuda")],
         [InlineKeyboardButton("🙈 Ocultar Menu", callback_data="au:ocultar")],
     ])
+
+
+def _build_llm_menu_keyboard() -> InlineKeyboardMarkup:
+    """Submenu: proveedores, modelos del proveedor activo y volver."""
+    from services import llm_settings
+
+    active_provider = llm_settings.get_provider()
+    active_model = llm_settings.get_model()
+
+    rows: list[list[InlineKeyboardButton]] = []
+    provider_buttons = []
+    for provider, label in (("deepseek", "DeepSeek"), ("anthropic", "Anthropic")):
+        marker = " ✅" if provider == active_provider else ""
+        if llm_settings.has_api_key(provider):
+            provider_buttons.append(
+                InlineKeyboardButton(
+                    f"{label}{marker}",
+                    callback_data=f"au:llm_set:provider:{provider}",
+                ),
+            )
+        else:
+            provider_buttons.append(
+                InlineKeyboardButton(
+                    f"{label} (sin key)",
+                    callback_data="au:llm:nokey",
+                ),
+            )
+    rows.append(provider_buttons)
+
+    for model in llm_settings.MODEL_CATALOG[active_provider]:
+        marker = " ✅" if model == active_model else ""
+        rows.append([
+            InlineKeyboardButton(
+                f"{model}{marker}",
+                callback_data=f"au:llm_set:model:{model}",
+            ),
+        ])
+
+    rows.append([
+        InlineKeyboardButton("⬅️ Volver al menu", callback_data="au:menu"),
+    ])
+    return InlineKeyboardMarkup(rows)
 
 
 def _build_user_list_keyboard() -> InlineKeyboardMarkup:
@@ -258,6 +302,66 @@ async def send_main_menu(bot, chat_id: int) -> None:
         chat_id=chat_id,
         text="📋 Menu Principal — Diana Bot Admin",
         reply_markup=_build_main_menu_keyboard(),
+    )
+
+
+async def send_llm_menu(bot, chat_id: int) -> None:
+    """Envia el submenu de configuracion LLM."""
+    from services import llm_settings
+
+    text = (
+        f"🤖 *Configuración LLM*\n\n"
+        f"Activo: {llm_settings.get_display_label()}"
+    )
+    await bot.send_message(
+        chat_id,
+        text,
+        parse_mode="Markdown",
+        reply_markup=_build_llm_menu_keyboard(),
+    )
+
+
+def build_estado_text(*, title: str = ESTADO_TITLE) -> str:
+    """Cuerpo compartido de estado para inline, slash y teclado reply."""
+    from config import (
+        APPROVAL_MODE,
+        CONFIDENCE_THRESHOLD,
+        OBSERVE_UNAUTHORIZED,
+        RESPONSE_DELAY_MAX,
+        RESPONSE_DELAY_MIN,
+        SILENCE_MINUTES,
+    )
+    from services.llm_settings import format_estado_llm_line
+    from state import pending_approval
+
+    mode = "Supervisado" if APPROVAL_MODE else "Autonomo"
+    delay = (
+        f"{SILENCE_MINUTES} min (supervisado)"
+        if APPROVAL_MODE
+        else f"{RESPONSE_DELAY_MIN}-{RESPONSE_DELAY_MAX} min"
+    )
+    vip_count = len(_users)
+    pending = len(pending_approval)
+
+    return (
+        f"{title}\n\n"
+        f"*Modo:* {mode}\n"
+        f"*Delay:* {delay}\n"
+        f"*Umbral confianza:* {CONFIDENCE_THRESHOLD}%\n"
+        f"*VIPs autorizados:* {vip_count}\n"
+        f"*Borradores pendientes:* {pending}\n"
+        f"*Observar no auth:* {'Si' if OBSERVE_UNAUTHORIZED else 'No'}\n"
+        f"{format_estado_llm_line()}"
+    )
+
+
+async def send_estado(bot, chat_id: int) -> None:
+    """Envia estado del bot (slash / teclado reply)."""
+    await bot.send_message(
+        chat_id=chat_id,
+        text=build_estado_text(),
+        parse_mode="Markdown",
+        reply_markup=_build_back_to_menu_keyboard(),
     )
 
 
@@ -543,6 +647,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.delete()
         except Exception:
             pass
+        return True
+
+    if action == "llm":
+        if len(parts) >= 2 and parts[1] == "nokey":
+            await query.answer("Falta API key en .env", show_alert=True)
+            return True
+        await query.answer()
+        await _replace_with_llm_menu(query)
+        return True
+
+    if action == "llm_set":
+        from services import llm_settings
+
+        if len(parts) < 3:
+            await query.answer("Callback LLM inválido", show_alert=True)
+            return True
+
+        sub = parts[1]
+        value = ":".join(parts[2:])
+        if sub == "provider":
+            ok, err = llm_settings.set_provider(value)
+            if not ok:
+                await query.answer(err or "Error", show_alert=True)
+            else:
+                await query.answer("Proveedor actualizado")
+            await _replace_with_llm_menu(query)
+            return True
+        if sub == "model":
+            ok, err = llm_settings.set_model(value)
+            if not ok:
+                await query.answer(err or "Error", show_alert=True)
+            else:
+                await query.answer("Modelo actualizado")
+            await _replace_with_llm_menu(query)
+            return True
+
+        await query.answer("Acción LLM desconocida", show_alert=True)
         return True
 
     # ── Acciones con user_id ────────────────────────────
@@ -852,35 +993,20 @@ async def _start_admin_note_capture(query, user_id: int) -> None:
     )
 
 
-async def _replace_with_estado(query) -> None:
-    """Muestra estado del bot inline."""
-    from config import (
-        APPROVAL_MODE, CONFIDENCE_THRESHOLD, LLM_PROVIDER,
-        OBSERVE_UNAUTHORIZED, RESPONSE_DELAY_MAX, RESPONSE_DELAY_MIN,
-        SILENCE_MINUTES,
-    )
-    from state import pending_approval
-
-    mode = "Supervisado" if APPROVAL_MODE else "Autonomo"
-    delay = (
-        f"{SILENCE_MINUTES} min (supervisado)"
-        if APPROVAL_MODE
-        else f"{RESPONSE_DELAY_MIN}-{RESPONSE_DELAY_MAX} min"
-    )
-    vip_count = len(_users)
-    pending = len(pending_approval)
+async def _replace_with_llm_menu(query) -> None:
+    """Muestra submenu de configuracion LLM."""
+    from services import llm_settings
 
     text = (
-        f"📊 *Estado del Bot*\n\n"
-        f"*Modo:* {mode}\n"
-        f"*Delay:* {delay}\n"
-        f"*Umbral confianza:* {CONFIDENCE_THRESHOLD}%\n"
-        f"*VIPs autorizados:* {vip_count}\n"
-        f"*Borradores pendientes:* {pending}\n"
-        f"*Observar no auth:* {'Si' if OBSERVE_UNAUTHORIZED else 'No'}\n"
-        f"*LLM:* {LLM_PROVIDER}"
+        f"🤖 *Configuración LLM*\n\n"
+        f"Activo: {llm_settings.get_display_label()}"
     )
-    await _edit_or_send(query, text, _build_back_to_menu_keyboard())
+    await _edit_or_send(query, text, _build_llm_menu_keyboard())
+
+
+async def _replace_with_estado(query) -> None:
+    """Muestra estado del bot inline."""
+    await _edit_or_send(query, build_estado_text(), _build_back_to_menu_keyboard())
 
 
 async def _replace_with_fallos(query) -> None:
@@ -901,7 +1027,8 @@ async def _replace_with_ayuda(query) -> None:
         "`/borrar_notas <id>` — Limpiar todas las notas de un VIP\n\n"
         "*Estado y Monitoreo*\n"
         "`/estado` — Estado actual del bot\n"
-        "`/fallos [dias]` — Reporte de fallos del LLM \\(7 dias por defecto\\)\n\n"
+        "`/fallos [dias]` — Reporte de fallos del LLM \\(7 dias por defecto\\)\n"
+        "`🤖 Config LLM` — Cambiar proveedor/modelo sin reiniciar\n\n"
         "*Utilidades*\n"
         "`/menu` — Mostrar el menu inline\n"
         "`/cancelar_nota` — Cancelar captura de nota en progreso\n"

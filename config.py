@@ -14,12 +14,13 @@ LLM_PROVIDER   = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
 
 DEEPSEEK_KEY   = os.getenv("DEEPSEEK_KEY")
 DEEPSEEK_URL   = "https://api.deepseek.com/v1/chat/completions"
-DEEPSEEK_MODEL = "deepseek-v4-pro"
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
 
 ANTHROPIC_KEY      = os.getenv("ANTHROPIC_KEY")
 ANTHROPIC_URL      = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL    = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 ANTHROPIC_VERSION  = "2023-06-01"
+LLM_SETTINGS_FILE = "diana_llm_settings.json"
 
 # Usuarios VIP iniciales (se migran a diana_authorized_users.json al primer arranque)
 VIP_USERS_SEED = {
