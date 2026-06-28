@@ -6,8 +6,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, MessageOrigin, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MessageOrigin,
+    ReplyKeyboardRemove,
+    Update,
+)
 from telegram.ext import ContextTypes
+
+import state
 
 log = logging.getLogger("diana.auth_users")
 
@@ -108,41 +116,326 @@ def _format_user_line(index: int, entry: dict) -> str:
     return f"{index}. {name}{extra} — ID: {entry['id']}"
 
 
-def _list_keyboard() -> InlineKeyboardMarkup | None:
-    if not _users:
-        return None
+# ═══════════════════════════════════════════════════════
+#  INLINE MENU BUILDERS
+# ═══════════════════════════════════════════════════════
+
+_MAX_NAME_LEN = 18
+
+
+def _build_main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Menu inline principal del administrador."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 Usuarios VIP", callback_data="au:list")],
+        [InlineKeyboardButton("📊 Estado del Bot", callback_data="au:estado")],
+        [InlineKeyboardButton("📈 Fallos del LLM", callback_data="au:fallos")],
+        [InlineKeyboardButton("❓ Ayuda", callback_data="au:ayuda")],
+        [InlineKeyboardButton("🙈 Ocultar Menu", callback_data="au:ocultar")],
+    ])
+
+
+def _build_user_list_keyboard() -> InlineKeyboardMarkup:
+    """Lista de usuarios VIP con acciones por usuario."""
     rows = []
     for entry in _users.values():
-        label = f"Eliminar {_display_name(entry)}"
+        name = _display_name(entry)
+        uid = entry["id"]
         rows.append([
             InlineKeyboardButton(
-                label[:60],
-                callback_data=f"au:del:{entry['id']}",
-            )
+                f"👤 {name[:_MAX_NAME_LEN]}",
+                callback_data=f"au:view:{uid}",
+            ),
+            InlineKeyboardButton("📝", callback_data=f"au:notes:{uid}"),
+            InlineKeyboardButton("🗑", callback_data=f"au:del_confirm:{uid}"),
         ])
+    rows.append([
+        InlineKeyboardButton("⬅️ Volver al menu", callback_data="au:menu"),
+    ])
     return InlineKeyboardMarkup(rows)
 
 
+def _build_user_detail_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Keyboard para la vista detalle de un usuario."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📝 Agregar Nota", callback_data=f"au:note_add:{user_id}",
+            ),
+            InlineKeyboardButton(
+                "🗑 Borrar Notas", callback_data=f"au:notes_clear:{user_id}",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🗑 Eliminar Usuario", callback_data=f"au:del_confirm:{user_id}",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "⬅️ Volver a la lista", callback_data="au:list",
+            ),
+        ],
+    ])
+
+
+def _build_confirm_delete_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ Si, eliminar", callback_data=f"au:del:{user_id}",
+            ),
+            InlineKeyboardButton(
+                "❌ Cancelar", callback_data=f"au:view:{user_id}",
+            ),
+        ],
+    ])
+
+
+def _build_confirm_clear_notes_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ Si, borrar todas", callback_data=f"au:notes_clear_ok:{user_id}",
+            ),
+            InlineKeyboardButton(
+                "❌ Cancelar", callback_data=f"au:view:{user_id}",
+            ),
+        ],
+    ])
+
+
+def _build_back_to_list_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Volver a la lista", callback_data="au:list")],
+    ])
+
+
+def _build_back_to_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Volver al menu", callback_data="au:menu")],
+    ])
+
+
 async def send_user_list(bot, chat_id: int) -> None:
+    """Envia la lista de usuarios VIP con teclado inline de acciones."""
     max_n = _max_users()
     count = len(_users)
-    lines = [f"Usuarios autorizados ({count}/{max_n})", "─" * 22]
 
     if not _users:
-        lines.append("No hay usuarios autorizados.")
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"👥 Usuarios VIP ({count}/{max_n})\n\n"
+                "No hay usuarios autorizados.\n\n"
+                "Para agregar uno, reenvia un mensaje suyo al bot."
+            ),
+            reply_markup=_build_back_to_menu_keyboard(),
+        )
+        return
+
+    lines = [
+        f"👥 Usuarios VIP ({count}/{max_n})",
+        "",
+        "Selecciona un usuario para ver su perfil, o usa los botones:",
+        "  👤 = Ver perfil completo",
+        "  📝 = Ver y agregar notas",
+        "  🗑 = Eliminar usuario",
+    ]
+    if count < max_n:
         lines.append("")
-        lines.append("Para agregar uno, reenvía un mensaje suyo al bot.")
-    else:
-        for i, entry in enumerate(_users.values(), 1):
-            lines.append(_format_user_line(i, entry))
-        lines.append("")
-        lines.append("Para agregar: reenvía un mensaje del usuario.")
-        lines.append("Para eliminar: usa los botones de abajo.")
+        lines.append("Para agregar: reenvia un mensaje del usuario al bot.")
 
     await bot.send_message(
         chat_id=chat_id,
         text="\n".join(lines),
-        reply_markup=_list_keyboard(),
+        reply_markup=_build_user_list_keyboard(),
+    )
+
+
+async def send_main_menu(bot, chat_id: int) -> None:
+    """Envia el menu inline principal del administrador."""
+    await bot.send_message(
+        chat_id=chat_id,
+        text="📋 Menu Principal — Diana Bot Admin",
+        reply_markup=_build_main_menu_keyboard(),
+    )
+
+
+async def send_user_detail(bot, chat_id: int, user_id: int) -> None:
+    """Envia la vista detalle de un usuario VIP."""
+    entry = _users.get(str(user_id))
+    if not entry:
+        await bot.send_message(chat_id=chat_id, text="Usuario no encontrado.")
+        return
+
+    from services import llm as llm_mod
+
+    svc = llm_mod.memory_service
+    facts: dict[str, str] = {}
+    notes: list[dict] = []
+    if svc:
+        raw_facts = svc.get_facts(user_id)
+        facts = {k: v for k, v in raw_facts.items() if k != "notes"}
+        notes = svc.get_notes(user_id)
+
+    username = entry.get("username")
+    first_name = entry.get("first_name")
+    added = entry.get("added_at", "?")[:10]
+
+    lines = [f"👤 Perfil de {_display_name(entry)}", ""]
+    lines.append(f"ID: {user_id}")
+    if first_name and username:
+        lines.append(f"Nombre: {first_name}")
+    lines.append(f"Agregado: {added}")
+
+    if facts:
+        lines.append("")
+        lines.append("📊 Datos extraidos:")
+        labels = {
+            "name": "Se llama",
+            "occupation": "Trabaja/estudia en",
+            "location": "Es de",
+            "interests": "Le interesa",
+            "relationship": "Estado sentimental",
+            "personality": "Su estilo",
+            "last_topic": "Ultimo tema",
+            "notable": "Dato importante",
+        }
+        for key, value in facts.items():
+            label = labels.get(key, key)
+            lines.append(f"  • {label}: {value}")
+
+    if notes:
+        from services.memory import extract_note_display_date, extract_note_display_text
+
+        display_notes = []
+        for n in notes:
+            text = extract_note_display_text(n, user_id)
+            if text:
+                date = extract_note_display_date(n, user_id)
+                display_notes.append((date, text))
+
+        if display_notes:
+            lines.append("")
+            lines.append(f"📝 Notas de Diana ({len(display_notes)}):")
+            for date_str, text in display_notes[-5:]:
+                preview = text[:100] + ("..." if len(text) > 100 else "")
+                lines.append(f"  [{date_str}] {preview}")
+            if len(display_notes) > 5:
+                lines.append(f"  ... y {len(display_notes) - 5} mas")
+
+    if not facts and not notes:
+        lines.append("")
+        lines.append("Sin datos extraidos ni notas todavia.")
+
+    await bot.send_message(
+        chat_id=chat_id,
+        text="\n".join(lines),
+        reply_markup=_build_user_detail_keyboard(user_id),
+    )
+
+
+async def send_user_notes_view(bot, chat_id: int, user_id: int) -> None:
+    """Envia la vista de notas de un usuario."""
+    entry = _users.get(str(user_id))
+    if not entry:
+        await bot.send_message(chat_id=chat_id, text="Usuario no encontrado.")
+        return
+
+    from services import llm as llm_mod
+    from services.memory import extract_note_display_date, extract_note_display_text
+
+    svc = llm_mod.memory_service
+    notes: list[dict] = []
+    if svc:
+        notes = svc.get_notes(user_id)
+
+    display_notes = []
+    for n in notes:
+        text = extract_note_display_text(n, user_id)
+        if text:
+            date = extract_note_display_date(n, user_id)
+            display_notes.append((date, text))
+
+    lines = [
+        f"📝 Notas de {_display_name(entry)}",
+        f"ID: {user_id}",
+        "",
+    ]
+
+    if display_notes:
+        lines.append(f"{len(display_notes)} nota(s):")
+        for date_str, text in display_notes:
+            lines.append(f"  [{date_str}] {text}")
+    else:
+        lines.append("No hay notas para este usuario.")
+        lines.append("Usa el boton 📝 Agregar Nota para crear una.")
+
+    await bot.send_message(
+        chat_id=chat_id,
+        text="\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "📝 Agregar Nota", callback_data=f"au:note_add:{user_id}",
+                ),
+                InlineKeyboardButton(
+                    "🗑 Borrar Notas", callback_data=f"au:notes_clear:{user_id}",
+                ),
+            ],
+            [InlineKeyboardButton("⬅️ Volver a la lista", callback_data="au:list")],
+        ]),
+    )
+
+
+async def send_confirm_delete(bot, chat_id: int, user_id: int) -> None:
+    """Envia pantalla de confirmacion para eliminar un usuario."""
+    entry = _users.get(str(user_id))
+    if not entry:
+        await bot.send_message(chat_id=chat_id, text="Usuario no encontrado.")
+        return
+
+    name = _display_name(entry)
+    await bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"⚠️ Eliminar a {name}?\n\n"
+            f"ID: {user_id}\n\n"
+            "Esta accion no se puede deshacer. "
+            "El usuario dejara de recibir respuestas automaticas."
+        ),
+        reply_markup=_build_confirm_delete_keyboard(user_id),
+    )
+
+
+async def send_confirm_clear_notes(bot, chat_id: int, user_id: int) -> None:
+    """Envia pantalla de confirmacion para borrar todas las notas."""
+    entry = _users.get(str(user_id))
+    if not entry:
+        await bot.send_message(chat_id=chat_id, text="Usuario no encontrado.")
+        return
+
+    from services import llm as llm_mod
+
+    svc = llm_mod.memory_service
+    note_count = len(svc.get_notes(user_id)) if svc else 0
+
+    if note_count == 0:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"No hay notas para {_display_name(entry)}.",
+            reply_markup=_build_back_to_list_keyboard(),
+        )
+        return
+
+    await bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"⚠️ Borrar todas las notas de {_display_name(entry)}?\n\n"
+            f"Se eliminaran {note_count} nota(s). "
+            "Esta accion no se puede deshacer."
+        ),
+        reply_markup=_build_confirm_clear_notes_keyboard(user_id),
     )
 
 
@@ -204,6 +497,7 @@ def _is_admin(user_id: int | None) -> bool:
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Maneja todos los callbacks del menu admin (au:)."""
     query = update.callback_query
     if not query or not query.data or not query.data.startswith("au:"):
         return False
@@ -212,27 +506,469 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer("No autorizado", show_alert=True)
         return True
 
-    parts = query.data.split(":")
-    if len(parts) != 3 or parts[1] != "del":
+    data = query.data[3:]  # strip "au:"
+    parts = data.split(":")
+    action = parts[0]
+
+    # ── Acciones sin ID ─────────────────────────────────
+    if action == "menu":
+        await query.answer()
+        await _edit_or_send(query, "📋 Menu Principal — Diana Bot Admin",
+                            _build_main_menu_keyboard())
+        return True
+
+    if action == "list":
+        await query.answer()
+        await _replace_with_user_list(query)
+        return True
+
+    if action == "estado":
+        await query.answer()
+        await _replace_with_estado(query)
+        return True
+
+    if action == "fallos":
+        await query.answer()
+        await _replace_with_fallos(query)
+        return True
+
+    if action == "ayuda":
+        await query.answer()
+        await _replace_with_ayuda(query)
+        return True
+
+    if action == "ocultar":
+        await query.answer("Menu ocultado. Escribe /menu para mostrarlo.")
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return True
+
+    # ── Acciones con user_id ────────────────────────────
+    if len(parts) < 2:
         await query.answer()
         return True
 
     try:
-        user_id = int(parts[2])
+        user_id = int(parts[1])
     except ValueError:
-        await query.answer("ID inválido", show_alert=True)
+        await query.answer("ID invalido", show_alert=True)
         return True
 
-    if not remove_user(user_id):
-        await query.answer("Usuario no encontrado", show_alert=True)
+    if action == "view":
+        await query.answer()
+        await _replace_with_detail(query, user_id)
         return True
 
-    await query.answer("Usuario eliminado")
-    await send_user_list(context.bot, query.message.chat_id)
+    if action == "del":
+        await query.answer()
+        if not remove_user(user_id):
+            await query.answer("Usuario no encontrado", show_alert=True)
+        else:
+            await query.answer("Usuario eliminado")
+        await _replace_with_user_list(query)
+        return True
+
+    if action == "del_confirm":
+        await query.answer()
+        await _replace_with_delete_confirm(query, user_id)
+        return True
+
+    if action == "notes":
+        await query.answer()
+        await _replace_with_notes(query, user_id)
+        return True
+
+    if action == "note_add":
+        await query.answer()
+        await _start_admin_note_capture(query, user_id)
+        return True
+
+    if action == "notes_clear":
+        await query.answer()
+        await _replace_with_clear_notes_confirm(query, user_id)
+        return True
+
+    if action == "notes_clear_ok":
+        await query.answer()
+        await _execute_clear_notes(query, user_id)
+        return True
+
+    await query.answer()
+    return True
+
+
+# ═══════════════════════════════════════════════════════
+#  CALLBACK ACTION HELPERS
+# ═══════════════════════════════════════════════════════
+
+
+async def _edit_or_send(query, text: str, markup: InlineKeyboardMarkup) -> None:
+    """Intenta editar el mensaje actual; si falla, envia uno nuevo."""
     try:
-        await query.message.delete()
+        await query.edit_message_text(text, reply_markup=markup)
     except Exception:
-        log.debug("No se pudo borrar el mensaje de lista de usuarios (puede ser ya eliminado)", exc_info=True)
+        await query.message.reply_text(text, reply_markup=markup)
+
+
+async def _replace_with_user_list(query) -> None:
+    """Reemplaza el mensaje actual con la lista de usuarios."""
+    max_n = _max_users()
+    count = len(_users)
+
+    if not _users:
+        await _edit_or_send(
+            query,
+            (f"👥 Usuarios VIP ({count}/{max_n})\n\n"
+             "No hay usuarios autorizados.\n\n"
+             "Para agregar uno, reenvia un mensaje suyo al bot."),
+            _build_back_to_menu_keyboard(),
+        )
+        return
+
+    lines = [
+        f"👥 Usuarios VIP ({count}/{max_n})",
+        "",
+        "👤 = Ver perfil  |  📝 = Notas  |  🗑 = Eliminar",
+    ]
+    if count < max_n:
+        lines.append("")
+        lines.append("Reenvia un mensaje para agregar un usuario.")
+
+    try:
+        await query.edit_message_text(
+            "\n".join(lines),
+            reply_markup=_build_user_list_keyboard(),
+        )
+    except Exception:
+        await query.message.reply_text(
+            "\n".join(lines),
+            reply_markup=_build_user_list_keyboard(),
+        )
+
+
+async def _replace_with_detail(query, user_id: int) -> None:
+    entry = _users.get(str(user_id))
+    if not entry:
+        await query.answer("Usuario no encontrado", show_alert=True)
+        return
+
+    from services import llm as llm_mod
+    from services.memory import extract_note_display_date, extract_note_display_text
+
+    svc = llm_mod.memory_service
+    facts: dict[str, str] = {}
+    notes: list[dict] = []
+    if svc:
+        raw = svc.get_facts(user_id)
+        facts = {k: v for k, v in raw.items() if k != "notes"}
+        notes = svc.get_notes(user_id)
+
+    added = entry.get("added_at", "?")[:10]
+    lines = [f"👤 Perfil de {_display_name(entry)}", ""]
+    lines.append(f"ID: {user_id}")
+    if entry.get("first_name") and entry.get("username"):
+        lines.append(f"Nombre: {entry['first_name']}")
+    lines.append(f"Agregado: {added}")
+
+    if facts:
+        lines.append("")
+        lines.append("📊 Datos extraidos:")
+        labels = {
+            "name": "Se llama", "occupation": "Trabaja/estudia en",
+            "location": "Es de", "interests": "Le interesa",
+            "relationship": "Estado sentimental", "personality": "Su estilo",
+            "last_topic": "Ultimo tema", "notable": "Dato importante",
+        }
+        for key, value in facts.items():
+            label = labels.get(key, key)
+            lines.append(f"  • {label}: {value}")
+
+    if notes:
+        display_notes = []
+        for n in notes:
+            text = extract_note_display_text(n, user_id)
+            if text:
+                date = extract_note_display_date(n, user_id)
+                display_notes.append((date, text))
+        if display_notes:
+            lines.append("")
+            lines.append(f"📝 Notas ({len(display_notes)}):")
+            for date_str, text in display_notes[-5:]:
+                preview = text[:100] + ("..." if len(text) > 100 else "")
+                lines.append(f"  [{date_str}] {preview}")
+            if len(display_notes) > 5:
+                lines.append(f"  ... y {len(display_notes) - 5} mas")
+
+    if not facts and not notes:
+        lines.append("")
+        lines.append("Sin datos extraidos ni notas todavia.")
+
+    lines.append("")
+    lines.append("Usa los botones para gestionar este perfil.")
+
+    await _edit_or_send(query, "\n".join(lines),
+                        _build_user_detail_keyboard(user_id))
+
+
+async def _replace_with_delete_confirm(query, user_id: int) -> None:
+    entry = _users.get(str(user_id))
+    if not entry:
+        await query.answer("Usuario no encontrado", show_alert=True)
+        return
+    name = _display_name(entry)
+    await _edit_or_send(
+        query,
+        (f"⚠️ Eliminar a {name}?\n\n"
+         f"ID: {user_id}\n\n"
+         "Esta accion no se puede deshacer. "
+         "El usuario dejara de recibir respuestas automaticas."),
+        _build_confirm_delete_keyboard(user_id),
+    )
+
+
+async def _replace_with_notes(query, user_id: int) -> None:
+    entry = _users.get(str(user_id))
+    if not entry:
+        await query.answer("Usuario no encontrado", show_alert=True)
+        return
+
+    from services import llm as llm_mod
+    from services.memory import extract_note_display_date, extract_note_display_text
+
+    svc = llm_mod.memory_service
+    notes: list[dict] = []
+    if svc:
+        notes = svc.get_notes(user_id)
+
+    display_notes = []
+    for n in notes:
+        text = extract_note_display_text(n, user_id)
+        if text:
+            date = extract_note_display_date(n, user_id)
+            display_notes.append((date, text))
+
+    lines = [f"📝 Notas de {_display_name(entry)}", f"ID: {user_id}", ""]
+    if display_notes:
+        lines.append(f"{len(display_notes)} nota(s):")
+        for date_str, text in display_notes:
+            lines.append(f"  [{date_str}] {text}")
+    else:
+        lines.append("No hay notas para este usuario.")
+        lines.append("Usa 📝 Agregar Nota para crear una.")
+
+    await _edit_or_send(query, "\n".join(lines), InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📝 Agregar Nota", callback_data=f"au:note_add:{user_id}",
+            ),
+            InlineKeyboardButton(
+                "🗑 Borrar Notas", callback_data=f"au:notes_clear:{user_id}",
+            ),
+        ],
+        [InlineKeyboardButton("⬅️ Volver a la lista", callback_data="au:list")],
+    ]))
+
+
+async def _replace_with_clear_notes_confirm(query, user_id: int) -> None:
+    entry = _users.get(str(user_id))
+    if not entry:
+        await query.answer("Usuario no encontrado", show_alert=True)
+        return
+
+    from services import llm as llm_mod
+
+    svc = llm_mod.memory_service
+    note_count = len(svc.get_notes(user_id)) if svc else 0
+
+    if note_count == 0:
+        await query.answer("No hay notas para borrar")
+        return
+
+    await _edit_or_send(
+        query,
+        (f"⚠️ Borrar todas las notas de {_display_name(entry)}?\n\n"
+         f"Se eliminaran {note_count} nota(s). "
+         "Esta accion no se puede deshacer."),
+        _build_confirm_clear_notes_keyboard(user_id),
+    )
+
+
+async def _execute_clear_notes(query, user_id: int) -> None:
+    from services import llm as llm_mod
+
+    svc = llm_mod.memory_service
+    if not svc:
+        await query.answer("Memoria no disponible", show_alert=True)
+        return
+
+    ok = svc.clear_notes(user_id)
+    await query.answer(
+        f"Notas borradas ({user_id})" if ok
+        else f"No habia notas ({user_id})"
+    )
+    # Refresh the detail view
+    await _replace_with_detail(query, user_id)
+
+
+async def _start_admin_note_capture(query, user_id: int) -> None:
+    """Activa la captura de nota desde el menu admin inline."""
+    entry = _users.get(str(user_id))
+    if not entry:
+        await query.answer("Usuario no encontrado", show_alert=True)
+        return
+
+    admin_id = query.from_user.id
+
+    # Check for existing note capture (approval flow)
+    if admin_id in state.awaiting_note:
+        await query.answer(
+            "Ya estas escribiendo una nota para un borrador. "
+            "Termina o usa /cancelar_nota.",
+            show_alert=True,
+        )
+        return
+
+    if admin_id in state.awaiting_admin_note:
+        await query.answer(
+            "Ya estas escribiendo una nota. Termina o usa /cancelar_nota.",
+            show_alert=True,
+        )
+        return
+
+    state.awaiting_admin_note[admin_id] = {
+        "user_id": user_id,
+        "username": _display_name(entry),
+    }
+
+    await query.answer()
+    await _edit_or_send(
+        query,
+        (f"✏️ Escribe tu nota para {_display_name(entry)}:\n\n"
+         "Se guardara en su perfil y se usara en respuestas futuras.\n"
+         "Escribe /cancelar_nota para cancelar."),
+        _build_back_to_list_keyboard(),
+    )
+
+
+async def _replace_with_estado(query) -> None:
+    """Muestra estado del bot inline."""
+    from config import (
+        APPROVAL_MODE, CONFIDENCE_THRESHOLD, LLM_PROVIDER,
+        OBSERVE_UNAUTHORIZED, RESPONSE_DELAY_MAX, RESPONSE_DELAY_MIN,
+        SILENCE_MINUTES,
+    )
+    from state import pending_approval
+
+    mode = "Supervisado" if APPROVAL_MODE else "Autonomo"
+    delay = (
+        f"{SILENCE_MINUTES} min (supervisado)"
+        if APPROVAL_MODE
+        else f"{RESPONSE_DELAY_MIN}-{RESPONSE_DELAY_MAX} min"
+    )
+    vip_count = len(_users)
+    pending = len(pending_approval)
+
+    text = (
+        f"📊 *Estado del Bot*\n\n"
+        f"*Modo:* {mode}\n"
+        f"*Delay:* {delay}\n"
+        f"*Umbral confianza:* {CONFIDENCE_THRESHOLD}%\n"
+        f"*VIPs autorizados:* {vip_count}\n"
+        f"*Borradores pendientes:* {pending}\n"
+        f"*Observar no auth:* {'Si' if OBSERVE_UNAUTHORIZED else 'No'}\n"
+        f"*LLM:* {LLM_PROVIDER}"
+    )
+    await _edit_or_send(query, text, _build_back_to_menu_keyboard())
+
+
+async def _replace_with_fallos(query) -> None:
+    """Muestra reporte de fallos del LLM inline."""
+    from services.training import format_llm_failure_report
+    report = format_llm_failure_report(days=7)
+    await _edit_or_send(query, report, _build_back_to_menu_keyboard())
+
+
+async def _replace_with_ayuda(query) -> None:
+    """Muestra referencia de comandos inline."""
+    text = (
+        "❓ *Comandos Disponibles*\n\n"
+        "*Gestion de VIPs*\n"
+        "`/usuarios` — Listar, agregar \\(reenviando mensaje\\), eliminar VIPs\n"
+        "`/notas <id>` — Ver notas y datos extraidos de un VIP\n"
+        "`/nota <id> <texto>` — Agregar nota manual para un VIP\n"
+        "`/borrar_notas <id>` — Limpiar todas las notas de un VIP\n\n"
+        "*Estado y Monitoreo*\n"
+        "`/estado` — Estado actual del bot\n"
+        "`/fallos [dias]` — Reporte de fallos del LLM \\(7 dias por defecto\\)\n\n"
+        "*Utilidades*\n"
+        "`/menu` — Mostrar el menu inline\n"
+        "`/cancelar_nota` — Cancelar captura de nota en progreso\n"
+        "`/ocultar_menu` — Ocultar el menu inline\n\n"
+        "Tip: Reenvia un mensaje de un usuario al bot para agregarlo como VIP\\."
+    )
+    await _edit_or_send(query, text, _build_back_to_menu_keyboard())
+
+
+async def handle_admin_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Captura la nota escrita desde el menu admin inline."""
+    msg = update.message
+    if not msg or not msg.text:
+        return False
+    if msg.from_user.id not in state.awaiting_admin_note:
+        return False
+
+    stripped = msg.text.strip()
+
+    # /cancelar_nota: cancel admin note capture, then let approval handler
+    # also check so it can cancel approval notes if both are active
+    if stripped.startswith("/"):
+        base_cmd = stripped.split()[0].split("@")[0]
+        if base_cmd == "/cancelar_nota":
+            note_ctx = state.awaiting_admin_note.pop(msg.from_user.id)
+            # If also in approval-note mode, return False so handle_diana_note runs
+            also_approval = msg.from_user.id in state.awaiting_note
+            await msg.reply_text(
+                f"Nota cancelada para {note_ctx['username']}."
+                + (" El borrador sigue pendiente." if also_approval else "")
+            )
+            return not also_approval  # False if also approval, so chain continues
+        return False
+
+    note_ctx = state.awaiting_admin_note[msg.from_user.id]
+    from services import llm as llm_mod
+
+    if not llm_mod.memory_service:
+        await msg.reply_text("Memoria no disponible.")
+        state.awaiting_admin_note.pop(msg.from_user.id, None)
+        return True
+
+    try:
+        saved = llm_mod.memory_service.add_note(note_ctx["user_id"], stripped)
+    except Exception as e:
+        log.error(
+            f"Error guardando nota admin | usuario {note_ctx['user_id']}: {e}"
+        )
+        await msg.reply_text("Error al guardar la nota. Intenta de nuevo o /cancelar_nota.")
+        return True
+
+    state.awaiting_admin_note.pop(msg.from_user.id, None)
+
+    if not saved:
+        await msg.reply_text(
+            "La nota esta vacia o no es valida. Escribe de nuevo o /cancelar_nota."
+        )
+        return True
+
+    await msg.reply_text(
+        f"✓ Nota guardada para {note_ctx['username']}.\n"
+        "Se usara en todas las respuestas futuras."
+    )
+    log.info(
+        f"Nota admin guardada | usuario {note_ctx['user_id']} "
+        f"({note_ctx['username']}): {stripped[:60]}"
+    )
     return True
 
 

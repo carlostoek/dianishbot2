@@ -18,6 +18,9 @@ awaiting_correction: dict[int, int] = {}
 #   "draft_chat_id"?, "draft_message_id"?}}
 awaiting_note: dict[int, dict] = {}
 
+# Captura de nota desde menu admin inline: {diana_telegram_id: {"user_id", "username"}}
+awaiting_admin_note: dict[int, dict] = {}
+
 # ═══════════════════════════════════════════════════════
 #  ESTADO EN MEMORIA
 # ═══════════════════════════════════════════════════════

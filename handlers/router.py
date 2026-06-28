@@ -26,6 +26,8 @@ async def process_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         and not update.business_message
         and update.message.chat.id == DIANA_ADMIN_CHAT_ID
     ):
+        if await auth_users.handle_admin_note(update, context):
+            return
         if await handle_diana_note(update, context):
             return
         if await handle_diana_correction(update, context):
