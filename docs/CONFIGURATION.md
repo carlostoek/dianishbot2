@@ -47,7 +47,11 @@ Beyond environment variables, runtime behavior is controlled by **constants in `
 | `RESPONSE_DELAY_MIN` | `1` | Min delay (minutes) before auto-reply in autonomous mode |
 | `RESPONSE_DELAY_MAX` | `8` | Max delay (minutes) — actual delay is random in range |
 | `SILENCE_MINUTES` | `2` | Wait time in supervised (`APPROVAL_MODE`) mode |
-| `MAX_HISTORY` | `10` | Messages sent to LLM as conversation context |
+| `MAX_HISTORY` | `50` | Messages sent to LLM as conversation context |
+| `MAX_STORED_HISTORY` | `50` | Messages persisted per chat in SQLite (`chat_history`); trim on append/seed |
+| `BACKFILL_INTERVAL_SEC` | `3600` | Asyncio scheduler interval — one VIP per hour |
+| `BACKFILL_MSG_LIMIT` | `100` | Telethon fetch limit per VIP (trimmed to `MAX_STORED_HISTORY` on seed) |
+| `BACKFILL_QUEUE_FILE` | `diana_backfill_queue.json` | Pending VIP backfill queue (gitignored) |
 | `MAX_FEW_SHOTS` | `3` | Approved examples injected into system prompt |
 | `CONFIDENCE_THRESHOLD` | `70` | Responses below this % trigger admin notification (autonomous mode) |
 | `APPROVAL_MODE` | `True` | `True` = supervised (Diana approves drafts); `False` = autonomous |
@@ -105,7 +109,8 @@ These files are created automatically and listed in `.gitignore`:
 | `diana_training.db` | `services/training.init_db()` + `MemoryService` | Training examples and user memory |
 | `diana_business.log` | `logging` in `diana.py` | Application logs |
 | `diana_escalaciones.txt` | `handlers/business.log_escalation()` | Escalation audit trail |
-| `diana_session.session` | `extractor.py` (Telethon) | User-session for chat export |
+| `diana_session.session` | `extractor.py` / backfill scheduler (Telethon) | User-session for chat export and VIP history backfill |
+| `diana_backfill_queue.json` | `services/history_backfill.py` | Pending VIP IDs for hourly history backfill |
 
 ## Per-environment overrides
 

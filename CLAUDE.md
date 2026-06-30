@@ -39,7 +39,9 @@ services/
   delivery.py         → deliver_vip_response() — read receipt → pause → typing → send (human-like timing)
   training.py         → SQLite persistence for training examples (examples table) and few-shot retrieval
   memory.py           → MemoryService — per-user facts + manual notes (user_memory table), background extraction
-extractor.py          → Standalone Telethon tool for chat history export
+  telethon_import.py  → Shared Telethon fetch + messages_to_history (lazy import; optional at bot startup)
+  history_backfill.py → VIP history queue + hourly asyncio scheduler → seed_chat_history (chat_history only)
+extractor.py          → Standalone Telethon tool for chat history export; delegates fetch to telethon_import
 ```
 
 ### Module boundary rule

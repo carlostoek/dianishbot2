@@ -105,6 +105,60 @@ def append_message(
     conn.commit()
 
 
+def seed_chat_history(chat_id: int, messages: list[dict], *, overwrite: bool = False) -> int:
+    """Bulk seed chat_history. Returns count written (0 if skipped).
+
+    Default: skip if DB row already has messages (protects live append_message history).
+    overwrite=True: force INSERT OR REPLACE (extractor CLI / admin batch only).
+    """
+    for m in messages:
+        if m.get("role") not in ("user", "assistant"):
+            raise ValueError(f"invalid role: {m.get('role')}")
+        if not isinstance(m.get("content"), str):
+            raise ValueError("content must be str")
+
+    if not overwrite:
+        existing = load_chat_history(chat_id)
+        if existing:
+            log.info(
+                "seed_chat_history: skip chat_id=%s (%s mensajes en DB)",
+                chat_id,
+                len(existing),
+            )
+            return 0
+        ram_msgs = state.history.get(chat_id) or []
+        if ram_msgs:
+            log.info(
+                "seed_chat_history: skip chat_id=%s (%s mensajes en RAM)",
+                chat_id,
+                len(ram_msgs),
+            )
+            return 0
+        from services import sandbox
+
+        if not sandbox.should_persist(chat_id):
+            log.info(
+                "seed_chat_history: skip chat_id=%s (sandbox activo, sin persistencia)",
+                chat_id,
+            )
+            return 0
+
+    trimmed = _trim(list(messages))
+    state.history[chat_id] = list(trimmed)
+
+    if db is None:
+        return len(trimmed)
+
+    conn = _require_db()
+    conn.execute(
+        "INSERT OR REPLACE INTO chat_history (chat_id, messages, updated_at) "
+        "VALUES (?, ?, ?)",
+        (chat_id, _serialize(trimmed), datetime.now().isoformat()),
+    )
+    conn.commit()
+    return len(trimmed)
+
+
 def clear_chat_history(chat_id: int) -> None:
     state.history.pop(chat_id, None)
     if db is None:

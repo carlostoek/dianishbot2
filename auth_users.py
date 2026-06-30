@@ -99,6 +99,34 @@ def get_authorized_ids() -> set[int]:
     return {int(uid) for uid in _users}
 
 
+def mark_history_seeded(user_id: int, *, error: str | None = None) -> None:
+    """Set history_seeded_at (and optional history_seed_error) after backfill attempt."""
+    key = str(user_id)
+    if key not in _users:
+        return
+    _users[key]["history_seeded_at"] = datetime.now(timezone.utc).isoformat()
+    if error:
+        _users[key]["history_seed_error"] = error
+    else:
+        _users[key].pop("history_seed_error", None)
+    _save()
+
+
+def get_users_needing_backfill() -> list[int]:
+    """Authorized VIPs without history_seeded_at (missing field = needs backfill)."""
+    return [
+        int(uid)
+        for uid, entry in _users.items()
+        if not entry.get("history_seeded_at")
+    ]
+
+
+def is_history_seeded(user_id: int) -> bool:
+    """True if user entry has history_seeded_at set."""
+    entry = _users.get(str(user_id))
+    return bool(entry and entry.get("history_seeded_at"))
+
+
 def _display_name(entry: dict) -> str:
     if entry.get("username"):
         return f"@{entry['username']}"
@@ -587,6 +615,12 @@ def _extract_forwarded_user(msg) -> tuple[int, str | None, str | None] | None:
 def add_user(user_id: int, username: str | None, first_name: str | None) -> str:
     key = str(user_id)
     if key in _users:
+        if not is_history_seeded(user_id):
+            try:
+                from services import history_backfill
+                history_backfill.enqueue(user_id)
+            except Exception as e:
+                log.warning(f"No se pudo encolar backfill para {user_id}: {e}")
         return "already"
 
     if len(_users) >= _max_users():
@@ -600,6 +634,11 @@ def add_user(user_id: int, username: str | None, first_name: str | None) -> str:
     }
     _save()
     log.info(f"Usuario autorizado agregado: {user_id} ({username or first_name})")
+    try:
+        from services import history_backfill
+        history_backfill.enqueue(user_id)
+    except Exception as e:
+        log.warning(f"No se pudo encolar backfill para {user_id}: {e}")
     return "ok"
 
 
@@ -610,6 +649,16 @@ def remove_user(user_id: int) -> bool:
     entry = _users.pop(key)
     _save()
     log.info(f"Usuario autorizado eliminado: {entry['id']} ({entry.get('username')})")
+    try:
+        from services import history_backfill
+        history_backfill.dequeue(user_id)
+    except Exception as e:
+        log.warning(f"No se pudo desencolar backfill para {user_id}: {e}")
+    try:
+        from services import chat_history
+        chat_history.clear_chat_history(user_id)
+    except Exception as e:
+        log.warning(f"No se pudo limpiar chat_history para {user_id}: {e}")
     return True
 
 

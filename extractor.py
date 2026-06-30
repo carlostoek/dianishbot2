@@ -36,33 +36,32 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError
-from telethon.tl.types import User, Chat, Channel
-from telethon.utils import get_display_name
+
+from config import AUTH_USERS_FILE, BACKFILL_MSG_LIMIT
+from services.telethon_import import (
+    SESSION_NAME,
+    fetch_all_messages,
+    fetch_vip_history,
+    get_entity_name,
+    messages_to_history,
+)
+from services import telethon_import as telethon_import_mod
 
 load_dotenv()
 
 # ──────────────────────────────────────────────────────────────
 # CONFIG
 # ──────────────────────────────────────────────────────────────
-SESSION_NAME = "diana_session"
 DB_FILE = "diana_training.db"
 MAX_CONTEXT_TURNS = 6
 
 
 def get_api_credentials():
-    """Lazy load so --help works without env."""
-    api_id = os.getenv("API_ID") or os.getenv("TELEGRAM_API_ID")
-    api_hash = os.getenv("API_HASH") or os.getenv("TELEGRAM_API_HASH")
-    if not api_id or not api_hash:
-        raise SystemExit(
-            "Faltan API_ID y API_HASH.\n"
-            "Agregalos a tu .env (ejemplo):\n"
-            "  API_ID=tu_api_id\n"
-            "  API_HASH=tu_api_hash\n"
-            "Obtenelos gratis en: https://my.telegram.org"
-        )
-    return int(api_id), api_hash
+    """CLI wrapper — maps RuntimeError to SystemExit for UX."""
+    try:
+        return telethon_import_mod.get_api_credentials()
+    except RuntimeError as e:
+        raise SystemExit(str(e)) from e
 
 EXPORT_DIR = Path("exports")
 
@@ -146,68 +145,6 @@ def format_pairs(messages: list[dict]) -> list[dict]:
     return pairs
 
 
-async def fetch_all_messages(client: TelegramClient, entity, limit: int | None) -> list[dict]:
-    """Trae mensajes en orden cronológico (más viejo primero)."""
-    out: list[dict] = []
-    me = await client.get_me()
-    diana_id = me.id
-    last_id = 0
-    retries = 0
-    max_retries = 5
-    batch_count = 0
-    rate_limit_batch = 200
-
-    while True:
-        try:
-            async for msg in client.iter_messages(entity, reverse=True, limit=limit, offset_id=last_id):
-                if msg is None:
-                    continue
-
-                text = (msg.text or getattr(msg, "message", None) or getattr(msg, "caption", None) or "").strip()
-
-                sender_name = "Unknown"
-                try:
-                    sender = await msg.get_sender()
-                    if sender:
-                        sender_name = get_display_name(sender)
-                except Exception:
-                    # Sender puede fallar por permisos/privacidad en algunos mensajes; no es crítico para el export.
-                    pass
-
-                out.append({
-                    "id": msg.id,
-                    "date": msg.date.isoformat() if msg.date else None,
-                    "sender_id": msg.sender_id,
-                    "sender_name": sender_name,
-                    "text": text,
-                    "is_diana": bool(msg.out or (msg.sender_id == diana_id)),
-                    "has_media": bool(msg.media),
-                    "chat_id": getattr(entity, "id", None),
-                })
-                last_id = msg.id
-                batch_count += 1
-                if batch_count % rate_limit_batch == 0:
-                    await asyncio.sleep(0.5)
-            break
-        except FloodWaitError as e:
-            retries += 1
-            if retries > max_retries:
-                print(f"  ✗ Demasiados flood waits ({max_retries}). Abortando extracción de este chat.")
-                break
-            print(f"  ⚠ Flood wait {e.seconds}s — esperando (intento {retries}/{max_retries})...")
-            await asyncio.sleep(e.seconds)
-
-    return out
-
-
-def get_entity_name(entity) -> str:
-    if isinstance(entity, (Chat, Channel)):
-        return entity.title or str(entity.id)
-    if isinstance(entity, User):
-        return get_display_name(entity) or str(entity.id)
-    return getattr(entity, "title", None) or getattr(entity, "first_name", None) or str(getattr(entity, "id", "unknown"))
-
-
 async def cmd_list(args: argparse.Namespace) -> None:
     api_id, api_hash = get_api_credentials()
     client = TelegramClient(SESSION_NAME, api_id, api_hash)
@@ -288,6 +225,23 @@ async def cmd_export(args: argparse.Namespace) -> None:
                     json.dump(payload, f, ensure_ascii=False, indent=2)
                 print(f"  Guardado (raw): {path}")
 
+            elif args.format == "history":
+                records = messages_to_history(msgs)
+                suffix = "history"
+                path = out_dir / f"chat_{chat_id}_{safe_title}_{suffix}_{ts}.jsonl"
+                with open(path, "w", encoding="utf-8") as f:
+                    for rec in records:
+                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                print(f"  Guardado (history): {path} — {len(records)} mensajes")
+                total_examples += len(records)
+
+                if args.import_db:
+                    seeded = import_history_to_db(records, chat_id, overwrite=args.overwrite)
+                    if seeded:
+                        print(f"  → Sembrados en {DB_FILE}: {seeded} mensaje(s) en chat_history")
+                    else:
+                        print(f"  → Omitido (chat_history ya tenía mensajes; usa --overwrite)")
+
             else:
                 if args.format == "training":
                     examples = build_training_examples(msgs, title)
@@ -310,7 +264,7 @@ async def cmd_export(args: argparse.Namespace) -> None:
                     print(f"  → Insertados en {DB_FILE}: {inserted} ejemplos (diana_manual)")
 
         print("\n" + "=" * 50)
-        print(f"Listo. Mensajes totales: {total_msgs} | Ejemplos generados: {total_examples}")
+        print(f"Listo. Mensajes totales: {total_msgs} | Registros generados: {total_examples}")
     finally:
         await client.disconnect()
 
@@ -356,12 +310,114 @@ def import_examples_to_db(examples: list[dict], chat_id: int, username: str) -> 
     return inserted
 
 
+def import_history_to_db(
+    records: list[dict],
+    chat_id: int,
+    *,
+    overwrite: bool = False,
+) -> int:
+    """Seed chat_history table (not examples)."""
+    import services.chat_history as chat_history_mod
+
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    chat_history_mod.db = conn
+    chat_history_mod.init_schema(conn)
+    try:
+        return chat_history_mod.seed_chat_history(
+            chat_id, records, overwrite=overwrite
+        )
+    finally:
+        conn.close()
+
+
+async def cmd_backfill_vips(args: argparse.Namespace) -> None:
+    import auth_users
+    from services.history_backfill import is_permanent_error, should_mark_history_seeded
+
+    auth_users.configure(users_file=AUTH_USERS_FILE, max_users=100, seed_user_ids=[])
+    users = auth_users.get_users_needing_backfill()
+    if args.force:
+        users = sorted(auth_users.get_authorized_ids())
+
+    if not users:
+        print("No hay VIPs pendientes de backfill.")
+        return
+
+    msg_limit = args.limit or BACKFILL_MSG_LIMIT
+    print(f"VIPs a procesar: {len(users)} (limit={msg_limit} msgs/usuario)")
+    if args.dry_run:
+        for uid in users:
+            seeded = "seeded" if auth_users.is_history_seeded(uid) else "pending"
+            print(f"  [dry-run] {uid} ({seeded})")
+        return
+
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    import services.chat_history as chat_history_mod
+    chat_history_mod.db = conn
+    chat_history_mod.init_schema(conn)
+
+    ok = 0
+    skipped = 0
+    failed = 0
+    permanent_failed = 0
+    try:
+        for user_id in users:
+            if not auth_users.is_authorized(user_id):
+                print(f"\n→ Backfill VIP {user_id} ... omitido (no autorizado)")
+                skipped += 1
+                continue
+            print(f"\n→ Backfill VIP {user_id} ...")
+            try:
+                messages, name = await fetch_vip_history(user_id, msg_limit)
+                print(f"  Obtenidos: {len(messages)} mensajes ({name})")
+                n = chat_history_mod.seed_chat_history(
+                    user_id,
+                    messages,
+                    overwrite=args.overwrite,
+                )
+                telethon_count = len(messages)
+                if should_mark_history_seeded(user_id, n, telethon_count):
+                    auth_users.mark_history_seeded(user_id)
+                    if n:
+                        print(f"  Sembrados: {n} mensaje(s)")
+                        ok += 1
+                    elif telethon_count:
+                        print("  Omitido (historial ya existía en DB)")
+                        skipped += 1
+                    else:
+                        print("  Chat vacío — marcado como sembrado")
+                        ok += 1
+                else:
+                    print("  Omitido (RAM/sandbox bloqueó seed) — no marcado como sembrado")
+                    skipped += 1
+            except Exception as e:
+                err_text = f"{type(e).__name__}: {e}"
+                if is_permanent_error(e):
+                    auth_users.mark_history_seeded(user_id, error=err_text)
+                    permanent_failed += 1
+                    print(f"  ✗ Error permanente: {err_text}")
+                else:
+                    failed += 1
+                    print(f"  ✗ Error transitorio: {err_text}")
+    finally:
+        conn.close()
+
+    print("\n" + "=" * 50)
+    print(
+        f"Listo. OK: {ok} | Omitidos: {skipped} | "
+        f"Transitorios: {failed} | Permanentes: {permanent_failed}"
+    )
+
+
 HELP_EPILOG = """
 ejemplos:
   python extractor.py list
   python extractor.py list --limit 20
   python extractor.py export --chat 123456789 --format training
   python extractor.py export --chat @username --format training --import-db --limit 500
+  python extractor.py export --chat 123456789 --format history --import-db
+  python extractor.py backfill-vips
+  python extractor.py backfill-vips --dry-run
   python extractor.py export --all -y
 
 requisitos:
@@ -392,14 +448,41 @@ def build_parser() -> argparse.ArgumentParser:
     p_exp.add_argument("--all", action="store_true", help="Exportar TODOS los chats (cuidado)")
     p_exp.add_argument(
         "--format", "-f",
-        choices=["raw", "training", "pairs"],
+        choices=["raw", "training", "pairs", "history"],
         default="training",
-        help="raw = JSON completo | training = listo para DB | pairs = user/diana simples"
+        help="raw | training | pairs | history (chat_history JSONL)"
     )
     p_exp.add_argument("--out-dir", default="exports", help="Directorio de salida")
     p_exp.add_argument("--limit", type=int, default=None, help="Limitar cantidad de mensajes (útil para pruebas)")
-    p_exp.add_argument("--import-db", action="store_true", help="Importar automáticamente los ejemplos de training al diana_training.db")
+    p_exp.add_argument(
+        "--import-db",
+        action="store_true",
+        help="Importar a diana_training.db (training→examples, history→chat_history)",
+    )
+    p_exp.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Con --import-db --format history: reemplazar chat_history existente",
+    )
     p_exp.add_argument("-y", "--yes", action="store_true", help="No pedir confirmación")
+
+    p_bf = subparsers.add_parser(
+        "backfill-vips",
+        help="Sembrar chat_history para VIPs autorizados sin history_seeded_at",
+    )
+    p_bf.add_argument("--dry-run", action="store_true", help="Solo listar VIPs pendientes")
+    p_bf.add_argument("--force", action="store_true", help="Incluir VIPs ya sembrados")
+    p_bf.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help=f"Mensajes por VIP (default {BACKFILL_MSG_LIMIT})",
+    )
+    p_bf.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Reemplazar chat_history existente en lugar de skip-if-nonempty",
+    )
 
     return parser
 
@@ -414,6 +497,8 @@ async def async_main() -> None:
 
     if args.command == "list":
         await cmd_list(args)
+    elif args.command == "backfill-vips":
+        await cmd_backfill_vips(args)
     elif args.command == "export":
         if args.all and not args.yes:
             print("⚠️  Vas a exportar TODOS los chats. Esto puede tardar y generar mucho volumen.")

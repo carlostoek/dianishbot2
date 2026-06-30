@@ -151,6 +151,14 @@ def main():
         admin_id=ADMIN_USER_ID,
     )
 
+    try:
+        from services import history_backfill
+        n = history_backfill.enqueue_missing_vips()
+        if n:
+            log.info(f"Backfill: {n} VIP(s) encolados al arranque")
+    except Exception as e:
+        log.warning(f"Backfill enqueue al arranque falló: {e}")
+
     app = (
         Application.builder()
         .token(BOT_TOKEN)

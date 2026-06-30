@@ -21,6 +21,7 @@ diana_training.db
 diana_training.db-shm
 diana_training.db-wal
 diana_traces.jsonl
+diana_backfill_queue.json
 *.session
 exports/
 
