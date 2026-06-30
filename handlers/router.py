@@ -36,7 +36,7 @@ async def process_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and not update.business_message:
         admin_id = auth_users.get_admin_id()
         if admin_id and update.message.from_user.id == admin_id:
-            # Menu button texts and new commands (/start, /menu, /estado, /ayuda)
+            # Admin slash commands (/start, /menu, /estado, /ayuda)
             if await handle_admin_input(update, context):
                 return
             # Legacy slash commands (/usuarios, /notas, /fallos, etc.)

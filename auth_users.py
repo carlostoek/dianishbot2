@@ -10,7 +10,6 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     MessageOrigin,
-    ReplyKeyboardRemove,
     Update,
 )
 from telegram.ext import ContextTypes
@@ -351,7 +350,7 @@ async def send_llm_menu(bot, chat_id: int) -> None:
 
 
 def build_estado_text(*, title: str = ESTADO_TITLE) -> str:
-    """Cuerpo compartido de estado para inline, slash y teclado reply."""
+    """Cuerpo compartido de estado para inline y slash."""
     from config import (
         APPROVAL_MODE,
         CONFIDENCE_THRESHOLD,
@@ -387,7 +386,7 @@ def build_estado_text(*, title: str = ESTADO_TITLE) -> str:
 
 
 async def send_estado(bot, chat_id: int) -> None:
-    """Envia estado del bot (slash / teclado reply)."""
+    """Envia estado del bot (slash /menu inline)."""
     await bot.send_message(
         chat_id=chat_id,
         text=build_estado_text(),
@@ -677,7 +676,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return True
 
     if action == "ocultar":
-        await query.answer("Menu ocultado. Escribe /menu para mostrarlo.")
+        await query.answer()
         try:
             await query.message.delete()
         except Exception:
@@ -1110,7 +1109,7 @@ async def _replace_with_escalaciones(query) -> None:
 
 
 async def send_escalaciones(bot, chat_id: int, *, days: int = 7) -> None:
-    """Envía reporte de escalaciones (reply keyboard / slash)."""
+    """Envía reporte de escalaciones (inline / slash)."""
     import state
     from services.training import format_escalation_report
 
@@ -1147,8 +1146,7 @@ async def _replace_with_ayuda(query) -> None:
         "`🔍 Trace LLM` — Toggle desde el menu inline\n\n"
         "*Utilidades*\n"
         "`/menu` — Mostrar el menu inline\n"
-        "`/cancelar_nota` — Cancelar captura de nota en progreso\n"
-        "`/ocultar_menu` — Ocultar el menu inline\n\n"
+        "`/cancelar_nota` — Cancelar captura de nota en progreso\n\n"
         "Tip: Reenvia un mensaje de un usuario al bot para agregarlo como VIP\\."
     )
     await _edit_or_send(query, text, _build_back_to_menu_keyboard())

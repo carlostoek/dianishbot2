@@ -1,4 +1,4 @@
-"""Tests for reply keyboard LLM routing and estado display."""
+"""Tests for admin slash commands and estado display."""
 
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -27,10 +27,23 @@ def admin_user(make_user):
 
 
 @pytest.mark.asyncio
-async def test_reply_keyboard_llm_routes(make_mock_update, make_context, admin_user):
-    update = make_mock_update(text="🤖 LLM", user=admin_user)
+async def test_start_clears_reply_keyboard(make_mock_update, make_context, admin_user):
+    update = make_mock_update(text="/start", user=admin_user)
 
-    with patch.object(auth_users, "send_llm_menu", new_callable=AsyncMock) as mock_send:
+    with patch.object(auth_users, "send_main_menu", new_callable=AsyncMock) as mock_menu:
+        result = await admin_menu.handle_admin_input(update, make_context())
+
+    assert result is True
+    markup = update.message.reply_text.await_args.kwargs["reply_markup"]
+    assert markup.remove_keyboard is True
+    mock_menu.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_menu_routes_to_inline(make_mock_update, make_context, admin_user):
+    update = make_mock_update(text="/menu", user=admin_user)
+
+    with patch.object(auth_users, "send_main_menu", new_callable=AsyncMock) as mock_send:
         result = await admin_menu.handle_admin_input(update, make_context())
 
     assert result is True
@@ -53,26 +66,3 @@ async def test_estado_shows_runtime_llm(make_mock_update, make_context, admin_us
     assert label in text
     assert "*LLM:*" in text
     assert auth_users.ESTADO_TITLE in text
-
-
-def test_menu_text_map_llm():
-    plain = admin_menu._strip_emoji("🤖 LLM")
-    assert plain == "LLM"
-    assert admin_menu._MENU_TEXT_MAP["LLM"] == "llm"
-
-
-def test_menu_text_map_escalaciones():
-    plain = admin_menu._strip_emoji("⚠️ Escalaciones")
-    assert plain == "Escalaciones"
-    assert admin_menu._MENU_TEXT_MAP["Escalaciones"] == "escalaciones"
-
-
-@pytest.mark.asyncio
-async def test_reply_keyboard_escalaciones_routes(
-    make_mock_update, make_context, admin_user,
-):
-    update = make_mock_update(text="⚠️ Escalaciones", user=admin_user)
-    with patch.object(auth_users, "send_escalaciones", new_callable=AsyncMock) as mock_send:
-        result = await admin_menu.handle_admin_input(update, make_context())
-    assert result is True
-    mock_send.assert_awaited_once()
