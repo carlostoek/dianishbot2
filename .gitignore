@@ -16,6 +16,7 @@ diana_state.json
 diana_runtime.json
 diana_llm_settings.json
 diana_system_prompt.md
+.diana_system_prompt.md.swp
 diana_training.db
 diana_training.db-shm
 diana_training.db-wal
