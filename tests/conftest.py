@@ -285,6 +285,13 @@ async def test_db(tmp_path):
             context TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_history (
+            chat_id    INTEGER PRIMARY KEY,
+            messages   TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     yield conn
     conn.close()
@@ -298,3 +305,14 @@ def in_memory_training_db(test_db):
     training_mod.db = test_db
     yield test_db
     training_mod.db = old_db
+
+
+@pytest.fixture
+def chat_history_db(test_db):
+    """Wire chat_history module db for unit tests."""
+    import services.chat_history as ch_mod
+    old = ch_mod.db
+    ch_mod.db = test_db
+    ch_mod.init_schema(test_db)
+    yield test_db
+    ch_mod.db = old

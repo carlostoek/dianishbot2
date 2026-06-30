@@ -38,6 +38,7 @@ RUNTIME_STATE_FILE = "diana_runtime.json"
 RESPONSE_DELAY_MIN = 1   # minutos — inicio del rango de espera antes del flujo
 RESPONSE_DELAY_MAX = 8   # minutos — fin del rango (aleatorio entre min y max)
 MAX_HISTORY     = 10    # mensajes de contexto que se envían al LLM
+MAX_STORED_HISTORY = 50   # mensajes persistidos en SQLite por chat (recorte en append)
 LLM_MAX_RETRIES = 3     # intentos totales ante fallo de red, JSON inválido o respuesta vacía
 LLM_RETRY_DELAY_SEC = 2.0  # pausa entre reintentos
 

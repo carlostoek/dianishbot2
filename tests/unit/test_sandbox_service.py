@@ -147,13 +147,18 @@ def test_deactivate_clears_active():
     assert sandbox.is_active(100) is False
 
 
-def test_reset_chat_state_clears_history():
+def test_reset_chat_state_clears_history(chat_history_db):
+    from services import chat_history
+
+    chat_history.append_message(100, "user", "hola")
     sandbox.activate(100)
-    state.history[100] = [{"role": "user", "content": "hola"}]
     state.chat_meta[100] = {"vip_id": 100, "username": "vip"}
     state.pending_approval[-1] = {"chat_id": 100, "username": "vip"}
     assert sandbox.reset_chat_state(100) is True
     assert 100 not in state.history
+    stored = chat_history.load_chat_history(100)
+    assert len(stored) == 1
+    assert stored[0]["content"] == "hola"
     assert 100 not in state.chat_meta
     assert -1 not in state.pending_approval
     assert sandbox.is_active(100) is True

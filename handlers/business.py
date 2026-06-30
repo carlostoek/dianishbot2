@@ -11,6 +11,7 @@ from state import (
     _save_runtime_state,
 )
 from services.training import save_observed_example
+from services.chat_history import ensure_loaded, append_message
 from .callbacks import notify_diana_escalation
 from .timer import auto_reply, compute_reply_delay
 log = logging.getLogger("diana")
@@ -176,8 +177,15 @@ async def _handle_business_message(
         if edited:
             return
         log.info(f"Diana retomó con {chat_id}: {text[:60]}")
+        ensure_loaded(chat_id)
         prior = history.get(chat_id, [])
-        history.setdefault(chat_id, []).append({"role": "assistant", "content": text})
+        persist_manual = bool(
+            vip_id and auth_users.is_authorized(vip_id, chat_id)
+        )
+        append_message(
+            chat_id, "assistant", text,
+            persist=persist_manual,
+        )
         if chat_id in timers:
             timers.pop(chat_id).cancel()
             _clear_timer_schedule(chat_id)
@@ -207,7 +215,8 @@ async def _handle_business_message(
     if not authorized:
         if OBSERVE_UNAUTHORIZED and text.strip() and not edited:
             log.info(f"OBSERVADO {username}: {text[:100]}")
-            history.setdefault(chat_id, []).append({"role": "user", "content": text})
+            ensure_loaded(chat_id)
+            append_message(chat_id, "user", text, persist=False)
             chat_bc[chat_id] = bc_id
             if vip_id:
                 chat_meta[chat_id] = {"vip_id": vip_id, "username": username}
@@ -224,7 +233,8 @@ async def _handle_business_message(
 
     log.info(f"ENTRADA {username}: {text[:100]}")
 
-    history.setdefault(chat_id, []).append({"role": "user", "content": text})
+    ensure_loaded(chat_id)
+    append_message(chat_id, "user", text)
     chat_bc[chat_id] = bc_id
     pending_msg[chat_id] = msg.message_id
     reason = needs_escalation(text)

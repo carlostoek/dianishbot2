@@ -4,7 +4,8 @@ import aiohttp
 import logging
 
 from config import BOT_TOKEN
-from state import history, pending_msg, reply_gen
+from state import pending_msg, reply_gen
+from services.chat_history import append_message
 
 log = logging.getLogger("diana")
 
@@ -91,7 +92,7 @@ async def deliver_vip_response(
             text=text,
             business_connection_id=bc_id,
         )
-        history.setdefault(chat_id, []).append({"role": "assistant", "content": text})
+        append_message(chat_id, "assistant", text)
         log.info(f"Enviado a {username}: {text[:80]}...")
         return True
     except Exception as e:

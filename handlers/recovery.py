@@ -37,6 +37,8 @@ def _restore_pending_from_db() -> int:
         if ex_id in pending_approval:
             continue
         history.setdefault(chat_id, ex["context"])
+        from services.chat_history import merge_runtime_with_db
+        merge_runtime_with_db(chat_id)
         bc_id = chat_bc.get(chat_id, "")
         gen = reply_gen.get(chat_id, 0)
         pending_approval[ex_id] = {
@@ -65,7 +67,16 @@ def _restore_pending_from_db() -> int:
 async def recover_runtime_on_startup(bot) -> tuple[int, int]:
     """Carga runtime persistido, re-programa timers y devuelve (timers, borradores)."""
     _load_runtime_state()
+    from services.chat_history import merge_all_loaded_chats
+    merged = merge_all_loaded_chats()
+    if merged:
+        log.info(f"Historial DB fusionado en {merged} chat(s) tras runtime load")
     drafts_from_db = _restore_pending_from_db()
+    merged_after_drafts = merge_all_loaded_chats()
+    if merged_after_drafts:
+        log.info(
+            f"Historial DB fusionado en {merged_after_drafts} chat(s) tras restaurar borradores"
+        )
 
     timers_recovered = 0
     for chat_id, meta in list(timer_schedule.items()):

@@ -355,6 +355,8 @@ async def get_diana_response(
     """Devuelve (texto, confidence 0-100, topic, fallo). fallo es None si hubo respuesta."""
     from services.training import get_few_shots, build_few_shot_block, build_escalation_fp_block
 
+    from services.chat_history import ensure_loaded
+    ensure_loaded(chat_id)
     msgs = history.get(chat_id, [])
     if not msgs:
         return None, 0, "general", LLMFailure(FAIL_NO_HISTORY, 0, "historial vacío")
