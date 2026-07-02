@@ -11,6 +11,7 @@ from telegram import Update
 from telegram.ext import Application, ContextTypes, TypeHandler
 
 import auth_users
+from services import auth_service
 
 from config import (
     ADMIN_USER_ID,
@@ -176,6 +177,10 @@ def main():
         .get_updates_pool_timeout(TG_POOL_TIMEOUT)
         .build()
     )
+
+    app.bot_data["auth_service"] = auth_service
+    app.bot_data["db"] = db
+    app.bot_data["memory_service"] = memory_service
 
     # TypeHandler captura todos los updates, incluyendo business_*
     app.add_handler(TypeHandler(Update, process_update))
