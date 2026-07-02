@@ -8,7 +8,7 @@ Requiere python-telegram-bot >= 21.0
 import logging
 
 from telegram import Update
-from telegram.ext import Application, ContextTypes, TypeHandler
+from telegram.ext import Application, BusinessConnectionHandler, ContextTypes, TypeHandler
 
 import auth_users
 from services import auth_service
@@ -73,6 +73,7 @@ from services.memory import MemoryService
 # (from-imports above make them available on module)
 
 from handlers.router import process_update, _post_init
+from handlers.business_connection import handle_business_connection
 from handlers.error_handler import error_handler
 
 db: "sqlite3.Connection | None" = None
@@ -181,6 +182,8 @@ def main():
     app.bot_data["auth_service"] = auth_service
     app.bot_data["db"] = db
     app.bot_data["memory_service"] = memory_service
+
+    app.add_handler(BusinessConnectionHandler(handle_business_connection))
 
     # TypeHandler captura todos los updates, incluyendo business_*
     app.add_handler(TypeHandler(Update, process_update))

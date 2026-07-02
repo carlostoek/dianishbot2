@@ -6,8 +6,7 @@ from telegram import Update
 from telegram.ext import Application, ContextTypes
 import auth_users
 from config import DIANA_ADMIN_CHAT_ID
-from state import _load_connections_state, _save_connections_state, connections
-import state
+from state import _load_connections_state
 from .business import _handle_business_message
 from .recovery import recover_runtime_on_startup
 from .callbacks import handle_callback, handle_diana_correction, handle_diana_note
@@ -94,21 +93,6 @@ async def process_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"auth:{auth_users.is_authorized(sender)} text:{text[:60]}"
             )
             return
-
-    # ── Conexión activada / desactivada por Diana ────
-    if update.business_connection:
-        conn = update.business_connection
-        if conn.is_enabled:
-            connections[conn.id] = conn.user.id
-            state.diana_user_id = conn.user.id
-            auth_users.set_admin_id(conn.user.id)
-            _save_connections_state()
-            log.info(f"Conexión activa: {conn.id} | Diana ID: {conn.user.id}")
-        else:
-            connections.pop(conn.id, None)
-            _save_connections_state()
-            log.info(f"Conexión desactivada: {conn.id}")
-        return
 
     if update.business_message:
         await _handle_business_message(update.business_message, context)
