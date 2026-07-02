@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 import auth_users
+import state
 from handlers import admin_menu
 from services import llm_settings
 
@@ -66,3 +67,21 @@ async def test_estado_shows_runtime_llm(make_mock_update, make_context, admin_us
     assert label in text
     assert "*LLM:*" in text
     assert auth_users.ESTADO_TITLE in text
+
+
+@pytest.mark.asyncio
+async def test_estado_shows_health_lines(
+    make_mock_update, make_context, admin_user, in_memory_training_db,
+):
+    state.connections["bc_a"] = ADMIN_ID
+    state.connections["bc_b"] = ADMIN_ID
+
+    with patch.object(llm_settings, "has_api_key", return_value=True):
+        update = make_mock_update(text="/estado", user=admin_user)
+        result = await admin_menu.handle_admin_input(update, make_context())
+
+    assert result is True
+    text = update.message.reply_text.await_args[0][0]
+    assert "*BD:* OK" in text
+    assert "*LLM key:* Configurada" in text
+    assert "*Conexiones business:* 2" in text
