@@ -5,6 +5,7 @@ from config import (
     APPROVAL_MODE, SILENCE_MINUTES, RESPONSE_DELAY_MIN, RESPONSE_DELAY_MAX,
     CONFIDENCE_THRESHOLD, is_llm_escalation_topic,
 )
+from services import auth_service
 from state import (
     chat_write_lock, history, reply_gen, timers, pending_approval, chat_meta,
     _clear_timer_schedule, _save_runtime_state,
@@ -19,8 +20,19 @@ memory_service = None
 log = logging.getLogger("diana")
 
 
-def compute_reply_delay() -> float:
-    if APPROVAL_MODE:
+def _is_supervised_for_chat(chat_id: int) -> bool:
+    """True when this chat still requires Diana approval before sending."""
+    if not APPROVAL_MODE:
+        return False
+    vip_id = chat_meta.get(chat_id, {}).get("vip_id", chat_id)
+    return not auth_service.is_auto_send_enabled(vip_id)
+
+
+def compute_reply_delay(chat_id: int | None = None) -> float:
+    supervised = (
+        APPROVAL_MODE if chat_id is None else _is_supervised_for_chat(chat_id)
+    )
+    if supervised:
         return SILENCE_MINUTES * 60
     return random.uniform(RESPONSE_DELAY_MIN * 60, RESPONSE_DELAY_MAX * 60)
 
@@ -37,7 +49,7 @@ async def auto_reply(
     *, delay_sec: float | None = None,
 ):
     if delay_sec is None:
-        delay_sec = compute_reply_delay()
+        delay_sec = compute_reply_delay(chat_id)
     log.info(f"⏳ {username}: respuesta programada en {delay_sec / 60:.1f} min")
 
     try:
@@ -109,12 +121,13 @@ async def auto_reply(
             chat_id, username, history.get(chat_id, []),
             response, confidence, topic,
         )
+    supervised = _is_supervised_for_chat(chat_id)
     log.info(
         f"Ejemplo {example_id} | conf={confidence}% | topic={topic} | "
-        f"modo={'supervisado' if APPROVAL_MODE else 'autónomo'}"
+        f"modo={'supervisado' if supervised else 'autónomo'}"
     )
 
-    if APPROVAL_MODE:
+    if supervised:
         async with chat_write_lock(chat_id):
             pending_approval[example_id] = {
                 "chat_id": chat_id,

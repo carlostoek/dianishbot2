@@ -266,7 +266,7 @@ async def _handle_business_message(
 
     reply_gen[chat_id] = reply_gen.get(chat_id, 0) + 1
     gen = reply_gen[chat_id]
-    delay_sec = compute_reply_delay()
+    delay_sec = compute_reply_delay(chat_id)
     fire_at = (datetime.now() + timedelta(seconds=delay_sec)).isoformat(timespec="seconds")
     timer_schedule[chat_id] = {
         "username": username,

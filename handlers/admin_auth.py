@@ -158,9 +158,23 @@ def _notes_keyboard_rows(user_id: int) -> list[list[InlineKeyboardButton]]:
     ]]
 
 
+def _auto_send_button(user_id: int) -> InlineKeyboardButton:
+    enabled = auth_service.is_auto_send_enabled(user_id)
+    if enabled:
+        return InlineKeyboardButton(
+            "⏸ Desactivar envío automático",
+            callback_data=f"au:auto_send:{user_id}",
+        )
+    return InlineKeyboardButton(
+        "🤖 Activar envío automático",
+        callback_data=f"au:auto_send:{user_id}",
+    )
+
+
 def _build_user_detail_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Keyboard para la vista detalle de un usuario."""
     rows = list(_notes_keyboard_rows(user_id))
+    rows.append([_auto_send_button(user_id)])
     rows.extend([
         [
             InlineKeyboardButton(
@@ -712,6 +726,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _execute_clear_notes(query, user_id, context=context)
         return True
 
+    if action == "auto_send":
+        enabled = auth_service.is_auto_send_enabled(user_id)
+        if not auth_service.set_auto_send(user_id, not enabled):
+            await query.answer("Usuario no encontrado", show_alert=True)
+            return True
+        new_state = "activado" if not enabled else "desactivado"
+        await query.answer(f"Envío automático {new_state}")
+        await _replace_with_detail(query, user_id, context=context)
+        return True
+
     await query.answer()
     return True
 
@@ -788,11 +812,15 @@ async def _replace_with_detail(
         notes = svc.get_notes(user_id)
 
     added = entry.get("added_at", "?")[:10]
+    auto_send = auth_service.is_auto_send_enabled(user_id)
     lines = [f"👤 Perfil de {_display_name(entry)}", ""]
     lines.append(f"ID: {user_id}")
     if entry.get("first_name") and entry.get("username"):
         lines.append(f"Nombre: {entry['first_name']}")
     lines.append(f"Agregado: {added}")
+    lines.append(
+        f"Modo respuesta: {'🤖 Automático' if auto_send else '👁 Supervisado'}"
+    )
 
     if facts:
         lines.append("")

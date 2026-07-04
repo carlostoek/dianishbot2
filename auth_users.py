@@ -20,6 +20,8 @@ from services.auth_service import (
     get_max_users,
     all_user_entries,
     is_admin,
+    is_auto_send_enabled,
+    set_auto_send,
 )
 
 from handlers.admin_auth import (

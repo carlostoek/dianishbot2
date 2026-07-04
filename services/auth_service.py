@@ -213,3 +213,25 @@ def get_admin_id() -> int | None:
 def is_admin(user_id: int | None) -> bool:
     admin_id = get_admin_id()
     return bool(admin_id and user_id == admin_id)
+
+
+def is_auto_send_enabled(user_id: int) -> bool:
+    """True if this VIP bypasses supervised approval and receives auto replies."""
+    _reload_if_changed()
+    entry = _users.get(str(user_id))
+    return bool(entry and entry.get("auto_send"))
+
+
+def set_auto_send(user_id: int, enabled: bool) -> bool:
+    """Enable or disable per-user auto-send. Returns False if user not found."""
+    key = str(user_id)
+    if key not in _users:
+        return False
+    if enabled:
+        _users[key]["auto_send"] = True
+    else:
+        _users[key].pop("auto_send", None)
+    _save()
+    state = "activado" if enabled else "desactivado"
+    log.info(f"Envío automático {state} para VIP {user_id}")
+    return True
