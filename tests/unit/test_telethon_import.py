@@ -30,6 +30,18 @@ def test_messages_to_history_skips_empty_text():
     assert out[0]["content"] == "ok"
 
 
+def test_messages_to_history_includes_media_placeholder():
+    msgs = [
+        {"text": "", "media_kind": "foto", "is_diana": True},
+        {"text": "", "media_kind": "video", "is_diana": False},
+    ]
+    out = messages_to_history(msgs)
+    assert out == [
+        {"role": "assistant", "content": "[foto]"},
+        {"role": "user", "content": "[video]"},
+    ]
+
+
 def test_messages_to_history_chronological_order():
     msgs = [
         {"text": "primero", "is_diana": False},

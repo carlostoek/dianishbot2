@@ -29,18 +29,21 @@ def get_api_credentials() -> tuple[int, str]:
 
 def messages_to_history(messages: list[dict]) -> list[dict]:
     """Raw Telethon message dicts → chat_history shape [{role, content}, ...]."""
+    from services.message_content import history_content_from_record
+
     out: list[dict] = []
     for m in messages:
-        text = (m.get("text") or "").strip()
-        if not text:
+        content = history_content_from_record(m)
+        if not content:
             continue
         role = "assistant" if m.get("is_diana") else "user"
-        out.append({"role": role, "content": text})
+        out.append({"role": role, "content": content})
     return out
 
 
 async def _message_to_record(msg, diana_id: int, entity) -> dict:
     from telethon.utils import get_display_name
+    from services.message_content import telethon_media_kind
 
     text = (
         msg.text
@@ -48,6 +51,7 @@ async def _message_to_record(msg, diana_id: int, entity) -> dict:
         or getattr(msg, "caption", None)
         or ""
     ).strip()
+    media_kind = telethon_media_kind(msg) if msg.media else None
 
     sender_name = "Unknown"
     try:
@@ -65,6 +69,7 @@ async def _message_to_record(msg, diana_id: int, entity) -> dict:
         "text": text,
         "is_diana": bool(msg.out or (msg.sender_id == diana_id)),
         "has_media": bool(msg.media),
+        "media_kind": media_kind,
         "chat_id": getattr(entity, "id", None),
     }
 

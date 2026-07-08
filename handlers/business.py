@@ -13,6 +13,7 @@ from state import (
 )
 from services.training import save_observed_example
 from services.chat_history import ensure_loaded, append_message
+from services.message_content import history_content_from_ptb
 from .callbacks import notify_diana_escalation
 from .timer import auto_reply, compute_reply_delay
 log = logging.getLogger("diana")
@@ -154,7 +155,7 @@ async def _handle_business_message(
 ):
     bc_id     = msg.business_connection_id
     chat_id   = msg.chat.id
-    text      = msg.text or msg.caption or ""
+    text      = history_content_from_ptb(msg)
     sender_id = _resolve_sender_id(msg)
     vip_id    = _resolve_vip_id(msg)
     username  = (

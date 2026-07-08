@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -104,6 +104,14 @@ async def test_append_assistant_on_delivery_persists(chat_history_db, bot):
     assert stored[0]["content"] == "respuesta bot"
 
 
+def _no_media_msg_attrs(msg):
+    for name in (
+        "photo", "video", "video_note", "voice", "audio",
+        "document", "sticker", "animation", "paid_media",
+    ):
+        setattr(msg, name, None)
+
+
 @pytest.mark.asyncio
 async def test_diana_manual_reply_persists_authorized(chat_history_db):
     state.connections[BC_ID] = ADMIN_ID
@@ -114,6 +122,7 @@ async def test_diana_manual_reply_persists_authorized(chat_history_db):
     msg.chat.id = VIP_CHAT_ID
     msg.text = "respuesta manual Diana"
     msg.caption = None
+    _no_media_msg_attrs(msg)
     msg.from_user.id = ADMIN_ID
     msg.from_user.username = "diana"
     msg.from_user.first_name = "Diana"
@@ -125,6 +134,36 @@ async def test_diana_manual_reply_persists_authorized(chat_history_db):
     assert len(stored) == 1
     assert stored[0]["role"] == "assistant"
     assert stored[0]["content"] == "respuesta manual Diana"
+
+
+@pytest.mark.asyncio
+async def test_diana_photo_without_caption_persists_placeholder(chat_history_db):
+    state.connections[BC_ID] = ADMIN_ID
+    state.chat_meta[VIP_CHAT_ID] = {"vip_id": VIP_ID, "username": "vip"}
+
+    msg = AsyncMock()
+    msg.business_connection_id = BC_ID
+    msg.chat.id = VIP_CHAT_ID
+    msg.text = None
+    msg.caption = None
+    msg.photo = [MagicMock()]
+    msg.video = None
+    msg.video_note = None
+    msg.voice = None
+    msg.audio = None
+    msg.document = None
+    msg.sticker = None
+    msg.animation = None
+    msg.paid_media = None
+    msg.from_user.id = ADMIN_ID
+    msg.from_user.username = "diana"
+    msg.from_user.first_name = "Diana"
+    msg.message_id = 1
+
+    await business._handle_business_message(msg, AsyncMock(), edited=False)
+
+    stored = chat_history.load_chat_history(VIP_CHAT_ID)
+    assert stored == [{"role": "assistant", "content": "[foto]"}]
 
 
 @pytest.mark.asyncio
