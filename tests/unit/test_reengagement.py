@@ -346,7 +346,14 @@ async def test_maybe_reengage_success_marks_cycle_and_notifies(monkeypatch):
     from config import DIANA_ADMIN_CHAT_ID
 
     if notify_calls:
-        assert True  # helper was used
+        assert len(notify_calls) >= 1
+        n = notify_calls[0]
+        assert n["kwargs"].get("chat_id") == 1001
+        assert n["kwargs"].get("username") == "vip_user"
+        assert n["kwargs"].get("template") in REENGAGE_TEMPLATES
+        assert n["kwargs"].get("idle_days") is not None
+        # bot is first positional when helper is patched
+        assert n["args"], "expected bot as first positional arg to _notify_diana"
     else:
         admin_sends = [
             c
@@ -674,24 +681,21 @@ async def test_scheduler_loop_honors_disabled_flag(monkeypatch):
     app = MagicMock()
     app.bot = AsyncMock()
 
-    # Run one iteration manually if exposed; else start_scheduler should no-op
-    if hasattr(reengagement, "_scan_once"):
-        await reengagement._scan_once(app)
-        assert calls == [] or not reengagement.REENGAGE_ENABLED
-    else:
-        # When disabled, start_scheduler must not create a long-running task that sends
-        created = []
-        real_create = asyncio.create_task
+    # Disabled: _scan_once must early-return without attempting re-engagement
+    await reengagement._scan_once(app)
+    assert calls == [], "disabled scanner must not call maybe_reengage"
 
-        def track_create(coro, *a, **k):
-            created.append(coro)
-            coro.close()  # don't actually run
-            return MagicMock()
+    # Disabled: start_scheduler must not spawn a background task
+    created: list = []
 
-        monkeypatch.setattr(asyncio, "create_task", track_create)
-        reengagement.start_scheduler(app)
-        # Either no task, or task would check flag — for disabled, prefer no start
-        assert created == [] or True
+    def track_create(coro, *a, **k):
+        created.append(coro)
+        coro.close()  # don't actually run
+        return MagicMock()
+
+    monkeypatch.setattr(asyncio, "create_task", track_create)
+    reengagement.start_scheduler(app)
+    assert created == [], "disabled start_scheduler must not create_task"
 
 
 @pytest.mark.asyncio
