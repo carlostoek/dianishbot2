@@ -42,6 +42,17 @@ MAX_STORED_HISTORY = 50   # mensajes persistidos en SQLite por chat (recorte en 
 BACKFILL_INTERVAL_SEC = 3600
 BACKFILL_MSG_LIMIT = 100
 BACKFILL_QUEUE_FILE = "diana_backfill_queue.json"
+
+# VIP idle re-engagement (multi-day silence scanner; not auto_reply)
+REENGAGE_ENABLED = True
+REENGAGE_IDLE_DAYS = 2
+REENGAGE_SCAN_INTERVAL_SEC = 3600
+REENGAGE_STATE_FILE = "diana_reengage_state.json"
+REENGAGE_TEMPLATES = [
+    "Oye, ¿todo bien? Hace rato que no sé de ti 😊",
+    "Hey, ¿seguís por acá? Me acordé de vos 💭",
+    "¿Todo bien de tu lado? Si estás ocupado no hay problema ✨",
+]
 LLM_MAX_RETRIES = 3     # intentos totales ante fallo de red, JSON inválido o respuesta vacía
 LLM_RETRY_DELAY_SEC = 2.0  # pausa entre reintentos
 
