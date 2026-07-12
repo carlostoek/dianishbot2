@@ -1,0 +1,16 @@
+change: non-vip-promo-info-autoreply
+status: archived
+archived_at: 2026-07-12
+archive_path: openspec/changes/archive/2026-07-12-non-vip-promo-info-autoreply/
+verify: PASS_WITH_WARNINGS
+core_tasks_complete: 15/15
+optional_skipped:
+  - "4.1 docs/CONFIGURATION.md feature-flag note"
+phases:
+  proposal: done
+  specs: done
+  design: done
+  tasks: done
+  apply: done
+  verify: done
+  archive: done
