@@ -76,6 +76,41 @@ OBSERVE_UNAUTHORIZED = True          # escuchar chats no autorizados (sin auto-r
 DB_FILE = "diana_training.db"
 MAX_FEW_SHOTS = 3
 
+# Non-VIP promo-info autoreply (fixed templates; no LLM / approval)
+NON_VIP_PROMO_AUTOREPLY_ENABLED = True
+NON_VIP_PROMO_TRIGGER = "Quiero más información 🔥"  # exact after str.strip()
+NON_VIP_PROMO_DELAY_MIN = 2   # minutes — start of pre-delivery wait range
+NON_VIP_PROMO_DELAY_MAX = 5   # minutes — end of range (uniform random)
+NON_VIP_PROMO_INTER_GAP_SEC = (1.5, 3.0)  # random uniform between msg1 and msg2
+NON_VIP_PROMO_MSG1_FIRST = "Holaaa 💕\nTe mando mis promos 🔥"
+NON_VIP_PROMO_MSG1_REPEAT = (
+    "Holis 😁 \n"
+    "Claro, te mando de nuevo mis promos. Los nombres son los mismos "
+    "pero es contenido nuevo y diferente."
+)
+NON_VIP_PROMO_MSG2 = """*Precios en pesos mexicanos 
+
+♥ Encanto Inicial 💫 - Explora mi lado más coqu3to con 1 video y 10 fotos, una dulce introducción para conocernos mejor. 
+📸 Precio $150 (10 usd)
+1 video donde me toco, juego con mis labios y 🍒
+10 fotos semid3snuda o con lencería
+
+🔴 Sensualidad Revelada 🔥 -  Déjate seducir con 2 videos y 10 fotos, donde desvelo mi lado más atrevido. 
+🎥 Precio: $200 (14 usd)
+2 videos donde me toc@, me abro bien ric@ me +turbo y se ve mi cara más 10 fotos
+
+❤️‍🔥 Pasión Desbordante 💋 - Vive la intensidad con 3 videos y 15 fotos, una experiencia íntima llena de emociones. 
+🎬 Precio: $250 (17 usd)
+Tres videos, uno con lencería muy s3nsual otro vestida y jugando muy s3xy y el último jugando con un dild0 🍒 me toco 🍑 más 15 fotos 
+
+❤️ Intimidad Explosiva 🔞 - Sumérgete en mí con 5 videos y 15 fotos, contenido totalmente atrevido y explícit0 
+🎞️ Precio: $300 (20 usd)
+Set de 5 videos totalmente explícit0s tocándome hasta terminar 💦, jugando con dildo, desvistiéndome hasta quedar d3snud@, usando juguetitos y uno exclusivo c0gi3ndo montando y moviendome rico 😈 más 15 fotos de obsequio
+
+💎 EL DIVÁN VIP 💎 
+Recibe antes que nadie lo más nuevo y ric0 de mi cont3nid0 suscribiéndote a mi canal privado y exclusivo y déjate consentir por la señorita más K1nky 🔥
+Subscripción mensual de $350 (23 usd)"""
+
 # Temas excluidos solo de ejemplos observados (chats no autorizados).
 # FAQs transaccionales/informativas — no aportan al estilo personal de Diana.
 SKIP_OBSERVED_TOPICS = {"contenido", "precio", "acceso", "horarios", "presentacion"}

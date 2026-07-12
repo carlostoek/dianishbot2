@@ -292,6 +292,13 @@ async def test_db(tmp_path):
             updated_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS promo_informed (
+            chat_id     INTEGER PRIMARY KEY,
+            username    TEXT,
+            informed_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     yield conn
     conn.close()
@@ -316,3 +323,14 @@ def chat_history_db(test_db):
     ch_mod.init_schema(test_db)
     yield test_db
     ch_mod.db = old
+
+
+@pytest.fixture
+def promo_info_db(test_db):
+    """Wire promo_info module db for unit tests."""
+    import services.promo_info as promo_mod
+    old = promo_mod.db
+    promo_mod.db = test_db
+    promo_mod.init_schema(test_db)
+    yield test_db
+    promo_mod.db = old
