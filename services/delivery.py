@@ -2,6 +2,7 @@ import asyncio
 import random
 import aiohttp
 import logging
+from collections.abc import Callable
 
 from config import BOT_TOKEN
 from state import chat_write_lock, pending_msg, reply_gen
@@ -99,3 +100,60 @@ async def deliver_vip_response(
     except Exception as e:
         log.error(f"Error enviando a {chat_id}: {e}")
         return False
+
+
+async def deliver_sequential_messages(
+    bot,
+    *,
+    chat_id: int,
+    bc_id: str,
+    username: str,
+    texts: list[str],
+    should_abort: Callable[[], bool] | None = None,
+    persist: bool = True,
+    inter_gap_sec: tuple[float, float] = (1.5, 3.0),
+) -> bool:
+    """Read once → type+send each text with short inter-gap. Return False on abort/fail.
+
+    Human-like multi-message delivery for fixed sequences (e.g. non-VIP promo).
+    Performs a single read-receipt phase, then for each text: abort check, typing,
+    send. Short random gap between messages (not after the last). When persist is
+    False, outbound history is not written (promo observe path).
+    """
+    if not texts:
+        return True
+
+    msg_id = pending_msg.get(chat_id)
+    if msg_id:
+        await asyncio.sleep(random.uniform(0.3, 1.0))
+        await mark_as_read(bot, bc_id, chat_id, msg_id)
+
+    n = len(texts)
+    for i, text in enumerate(texts):
+        if should_abort is not None and should_abort():
+            log.info(f"Entrega secuencial abortada para {chat_id} (antes de msg {i + 1})")
+            return False
+
+        await simulate_typing(bot, chat_id, bc_id, text)
+
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                business_connection_id=bc_id,
+            )
+        except Exception as e:
+            log.error(f"Error enviando msg {i + 1}/{n} a {chat_id}: {e}")
+            return False
+
+        if persist:
+            async with chat_write_lock(chat_id):
+                append_message(chat_id, "assistant", text)
+        log.info(f"Enviado ({i + 1}/{n}) a {username}: {text[:80]}...")
+
+        if i < n - 1:
+            gap_lo, gap_hi = inter_gap_sec
+            await asyncio.sleep(random.uniform(gap_lo, gap_hi))
+
+    return True
+
