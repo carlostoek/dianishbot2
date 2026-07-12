@@ -190,3 +190,230 @@ def test_training_init_db_wires_promo_schema(tmp_path, monkeypatch):
         assert row is not None
     finally:
         conn.close()
+
+
+# ── schedule_promo_reply / run_promo_reply (WU3 orchestration) ───────
+
+
+@pytest.mark.asyncio
+async def test_schedule_promo_reply_ignores_when_timer_active(promo_info_db, monkeypatch):
+    """If timers[chat_id] already set, do not stack another promo wait."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    import state
+
+    chat_id = 501
+    state.timers.clear()
+    state.timer_schedule.clear()
+    # Dummy "active" wait (not a real Task required for membership check)
+    state.timers[chat_id] = MagicMock(name="existing_task")
+
+    create_calls = []
+
+    def capture_create(coro):
+        create_calls.append(coro)
+        # close the coroutine to avoid RuntimeWarning
+        coro.close()
+        return MagicMock(name="new_task")
+
+    monkeypatch.setattr(asyncio, "create_task", capture_create)
+
+    bot = AsyncMock()
+    scheduled = await promo_info.schedule_promo_reply(
+        bot, chat_id=chat_id, username="buyer", bc_id="bc1", vip_id=501,
+    )
+
+    assert scheduled is False
+    assert len(create_calls) == 0
+    assert chat_id not in state.timer_schedule
+    assert state.timers[chat_id] is not None  # original preserved
+    state.timers.clear()
+    state.timer_schedule.clear()
+
+
+@pytest.mark.asyncio
+async def test_schedule_promo_reply_creates_task_without_timer_schedule(
+    promo_info_db, monkeypatch,
+):
+    """Successful schedule stores task in timers and never writes timer_schedule."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    import state
+
+    chat_id = 502
+    state.timers.clear()
+    state.timer_schedule.clear()
+    created = []
+
+    def capture_create(coro):
+        task = MagicMock(name="promo_task")
+        created.append((coro, task))
+        coro.close()
+        return task
+
+    monkeypatch.setattr(asyncio, "create_task", capture_create)
+    monkeypatch.setattr(promo_info, "compute_promo_delay_sec", lambda: 150.0)
+
+    bot = AsyncMock()
+    scheduled = await promo_info.schedule_promo_reply(
+        bot, chat_id=chat_id, username="buyer", bc_id="bc2", vip_id=502,
+    )
+
+    assert scheduled is True
+    assert len(created) == 1
+    assert state.timers[chat_id] is created[0][1]
+    assert chat_id not in state.timer_schedule
+    assert state.timer_schedule == {}
+    state.timers.clear()
+
+
+@pytest.mark.asyncio
+async def test_run_promo_reply_aborts_when_authorized_at_fire(promo_info_db, monkeypatch):
+    """If chat becomes VIP during wait, no deliver and no mark informed."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import state
+
+    chat_id = 503
+    state.timers[chat_id] = MagicMock()
+    state.timer_schedule.clear()
+
+    mock_deliver = AsyncMock(return_value=True)
+    mock_sleep = AsyncMock()
+
+    with (
+        patch("services.promo_info.asyncio.sleep", mock_sleep),
+        patch("services.promo_info.deliver_sequential_messages", mock_deliver),
+        patch("services.promo_info.auth_users.is_authorized", return_value=True),
+    ):
+        await promo_info.run_promo_reply(
+            AsyncMock(),
+            chat_id=chat_id,
+            username="buyer",
+            bc_id="bc3",
+            vip_id=503,
+            delay_sec=0.01,
+        )
+
+    mock_sleep.assert_awaited_once_with(0.01)
+    mock_deliver.assert_not_awaited()
+    assert promo_info.is_promo_informed(chat_id) is False
+    assert chat_id not in state.timers
+    state.timers.clear()
+
+
+@pytest.mark.asyncio
+async def test_run_promo_reply_success_marks_informed_and_clears_timers(
+    promo_info_db, monkeypatch,
+):
+    """Full success: deliver both msgs, mark informed, clear timers."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import state
+    from config import NON_VIP_PROMO_MSG1_FIRST, NON_VIP_PROMO_MSG2
+
+    chat_id = 504
+    state.timers[chat_id] = MagicMock()
+    state.timer_schedule.clear()
+
+    mock_deliver = AsyncMock(return_value=True)
+
+    with (
+        patch("services.promo_info.asyncio.sleep", new_callable=AsyncMock),
+        patch("services.promo_info.deliver_sequential_messages", mock_deliver),
+        patch("services.promo_info.auth_users.is_authorized", return_value=False),
+    ):
+        await promo_info.run_promo_reply(
+            AsyncMock(),
+            chat_id=chat_id,
+            username="buyer",
+            bc_id="bc4",
+            vip_id=504,
+            delay_sec=1.0,
+        )
+
+    mock_deliver.assert_awaited_once()
+    kwargs = mock_deliver.await_args.kwargs
+    assert kwargs["chat_id"] == chat_id
+    assert kwargs["bc_id"] == "bc4"
+    assert kwargs["username"] == "buyer"
+    assert kwargs["texts"] == [NON_VIP_PROMO_MSG1_FIRST, NON_VIP_PROMO_MSG2]
+    assert kwargs["persist"] is False
+    assert callable(kwargs["should_abort"])
+    assert promo_info.is_promo_informed(chat_id) is True
+    assert chat_id not in state.timers
+    assert chat_id not in state.timer_schedule
+    state.timers.clear()
+
+
+@pytest.mark.asyncio
+async def test_run_promo_reply_deliver_fail_does_not_mark(promo_info_db, monkeypatch):
+    """If deliver returns False, do not mark informed; still clear timers."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import state
+
+    chat_id = 505
+    state.timers[chat_id] = MagicMock()
+
+    with (
+        patch("services.promo_info.asyncio.sleep", new_callable=AsyncMock),
+        patch(
+            "services.promo_info.deliver_sequential_messages",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch("services.promo_info.auth_users.is_authorized", return_value=False),
+    ):
+        await promo_info.run_promo_reply(
+            AsyncMock(),
+            chat_id=chat_id,
+            username="buyer",
+            bc_id="bc5",
+            vip_id=505,
+            delay_sec=0.5,
+        )
+
+    assert promo_info.is_promo_informed(chat_id) is False
+    assert chat_id not in state.timers
+    state.timers.clear()
+
+
+@pytest.mark.asyncio
+async def test_run_promo_reply_cancelled_clears_timers(promo_info_db, monkeypatch):
+    """CancelledError during sleep exits cleanly and clears timers."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import state
+
+    chat_id = 506
+    state.timers[chat_id] = MagicMock()
+
+    with (
+        patch(
+            "services.promo_info.asyncio.sleep",
+            new_callable=AsyncMock,
+            side_effect=asyncio.CancelledError(),
+        ),
+        patch(
+            "services.promo_info.deliver_sequential_messages",
+            new_callable=AsyncMock,
+        ) as mock_deliver,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await promo_info.run_promo_reply(
+                AsyncMock(),
+                chat_id=chat_id,
+                username="buyer",
+                bc_id="bc6",
+                vip_id=506,
+                delay_sec=99.0,
+            )
+
+    mock_deliver.assert_not_awaited()
+    assert promo_info.is_promo_informed(chat_id) is False
+    assert chat_id not in state.timers
+    state.timers.clear()
