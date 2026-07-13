@@ -66,6 +66,10 @@ def load_chat_history(chat_id: int) -> list[dict]:
 
 def ensure_loaded(chat_id: int) -> list[dict]:
     """Load DB → RAM, preferring longer history. Returns current RAM list."""
+    from services import data_pause
+
+    if data_pause.is_paused(chat_id):
+        return []
     if db is None:
         return state.history.get(chat_id, [])
     if chat_id not in state.history or not state.history[chat_id]:
@@ -83,9 +87,11 @@ def append_message(
     *,
     persist: bool = True,
 ) -> None:
-    """Append to RAM; optionally persist to SQLite (with sandbox gate)."""
-    from services import sandbox
+    """Append to RAM; optionally persist to SQLite (with sandbox/pause gates)."""
+    from services import data_pause, sandbox
 
+    if data_pause.is_paused(chat_id):
+        return
     if role not in ("user", "assistant"):
         raise ValueError(f"invalid role: {role}")
     ensure_loaded(chat_id)

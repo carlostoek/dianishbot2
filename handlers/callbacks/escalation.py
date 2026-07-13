@@ -94,7 +94,9 @@ async def _generate_from_escalation(bot, esc_id: int) -> str | None:
         detail = failure_label(failure.reason) if failure else "sin respuesta"
         return f"llm_fail:{detail}"
 
-    if sandbox.is_active(chat_id):
+    from services import data_pause
+
+    if data_pause.uses_synthetic_examples(chat_id):
         example_id = sandbox.allocate_draft_id()
     else:
         example_id = cb.save_example(

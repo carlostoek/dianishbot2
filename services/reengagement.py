@@ -306,7 +306,9 @@ async def maybe_reengage(
 
     if not is_authorized(chat_id, chat_id=chat_id):
         return False
-    if sandbox.is_active(chat_id):
+    from services import data_pause
+
+    if sandbox.is_active(chat_id) or data_pause.is_paused(chat_id):
         return False
     if _has_active_timer(chat_id):
         return False

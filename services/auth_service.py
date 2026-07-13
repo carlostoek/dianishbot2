@@ -235,3 +235,15 @@ def set_auto_send(user_id: int, enabled: bool) -> bool:
     state = "activado" if enabled else "desactivado"
     log.info(f"Envío automático {state} para VIP {user_id}")
     return True
+
+
+def update_user_entry(user_id: int, mutator) -> dict | None:
+    """Apply mutator(entry) and persist. Returns updated entry or None if missing."""
+    _reload_if_changed()
+    key = str(user_id)
+    entry = _users.get(key)
+    if entry is None:
+        return None
+    mutator(entry)
+    _save()
+    return entry

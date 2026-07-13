@@ -113,8 +113,8 @@ async def auto_reply(
             _finish_timer(chat_id)
             return
 
-    from services import sandbox
-    if sandbox.is_active(chat_id):
+    from services import data_pause, sandbox
+    if data_pause.uses_synthetic_examples(chat_id):
         example_id = sandbox.allocate_draft_id()
     else:
         example_id = save_example(

@@ -123,8 +123,12 @@ def _seed_defer_reason(user_id: int) -> str | None:
 
     if load_chat_history(user_id):
         return None
+    from services import data_pause
+
     if sandbox.is_active(user_id):
         return "sandbox activo — reencolado al final"
+    if data_pause.is_paused(user_id):
+        return "recolección pausada — reencolado al final"
     ram_msgs = state.history.get(user_id) or []
     if ram_msgs:
         if sandbox.should_persist(user_id):
@@ -323,10 +327,11 @@ async def _process_one(app) -> None:
                     user_id,
                     defer,
                 )
-                if "sandbox" in defer.lower():
+                if "sandbox" in defer.lower() or "pausada" in defer.lower():
                     log.info(
-                        "Backfill diferido para %s — sin notificación DM (sandbox)",
+                        "Backfill diferido para %s — sin notificación DM (%s)",
                         user_id,
+                        defer,
                     )
                 else:
                     try:

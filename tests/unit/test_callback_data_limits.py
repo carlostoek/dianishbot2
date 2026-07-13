@@ -76,6 +76,9 @@ def _callback_buttons_from_builders() -> list[str]:
         auth_users._build_user_detail_keyboard(MAX_USER_ID),
     ))
     callbacks.extend(_collect_from_markup(
+        auth_users._build_pause_duration_keyboard(MAX_USER_ID),
+    ))
+    callbacks.extend(_collect_from_markup(
         auth_users._build_confirm_delete_keyboard(MAX_USER_ID),
     ))
     callbacks.extend(_collect_from_markup(

@@ -70,7 +70,10 @@ def is_active(chat_id: int) -> bool:
 
 
 def should_persist(chat_id: int) -> bool:
-    return not is_active(chat_id)
+    if is_active(chat_id):
+        return False
+    from services import data_pause
+    return not data_pause.is_paused(chat_id)
 
 
 def is_synthetic_id(example_id: int) -> bool:

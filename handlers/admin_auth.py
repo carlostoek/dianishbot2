@@ -125,13 +125,16 @@ def _build_trace_menu_keyboard() -> InlineKeyboardMarkup:
 
 def _build_user_list_keyboard() -> InlineKeyboardMarkup:
     """Lista de usuarios VIP con acciones por usuario."""
+    from services import data_pause
+
     rows = []
     for entry in auth_service.all_user_entries():
         name = _display_name(entry)
         uid = entry["id"]
+        prefix = "🔇 " if data_pause.is_paused(uid) else "👤 "
         rows.append([
             InlineKeyboardButton(
-                f"👤 {name[:_MAX_NAME_LEN]}",
+                f"{prefix}{name[:_MAX_NAME_LEN]}",
                 callback_data=f"au:view:{uid}",
             ),
             InlineKeyboardButton("📝", callback_data=f"au:notes:{uid}"),
@@ -171,10 +174,43 @@ def _auto_send_button(user_id: int) -> InlineKeyboardButton:
     )
 
 
+def _data_pause_button(user_id: int) -> InlineKeyboardButton:
+    from services import data_pause
+
+    if data_pause.is_paused(user_id):
+        return InlineKeyboardButton(
+            "▶️ Reactivar VIP",
+            callback_data=f"au:resume:{user_id}",
+        )
+    return InlineKeyboardButton(
+        "🔇 Pausar VIP",
+        callback_data=f"au:pause_menu:{user_id}",
+    )
+
+
+def _build_pause_duration_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    from services import data_pause
+
+    rows = []
+    for label, days in data_pause.duration_options():
+        token = "0" if days is None else str(days)
+        rows.append([
+            InlineKeyboardButton(
+                label,
+                callback_data=f"au:pause_days:{user_id}:{token}",
+            ),
+        ])
+    rows.append([
+        InlineKeyboardButton("❌ Cancelar", callback_data=f"au:view:{user_id}"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 def _build_user_detail_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Keyboard para la vista detalle de un usuario."""
     rows = list(_notes_keyboard_rows(user_id))
     rows.append([_auto_send_button(user_id)])
+    rows.append([_data_pause_button(user_id)])
     rows.extend([
         [
             InlineKeyboardButton(
@@ -437,7 +473,11 @@ def _build_user_profile_lines(
         lines.append("")
         lines.append("Sin datos extraidos ni notas todavia.")
 
-    from services import sandbox
+    from services import data_pause, sandbox
+    pause_line = data_pause.format_profile_line(user_id)
+    if pause_line:
+        lines.append("")
+        lines.append(pause_line)
     if sandbox.is_active(user_id):
         lines.append("")
         lines.append("🧪 Sandbox activo — notas deshabilitadas.")
@@ -756,6 +796,60 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _replace_with_detail(query, user_id, context=context)
         return True
 
+    if action == "pause_menu":
+        entry = auth_service.get_user_entry(user_id)
+        if not entry:
+            await query.answer("Usuario no encontrado", show_alert=True)
+            return True
+        await query.answer()
+        name = _display_name(entry)
+        await _edit_or_send(
+            query,
+            (
+                f"🔇 Pausar VIP — {name}\n\n"
+                "Mientras esté pausado el bot no hace nada con este usuario: "
+                "sin historial, sin respuestas automáticas, sin notificaciones "
+                "ni entrenamiento.\n"
+                "Diana puede seguir escribiendo en Telegram; esos mensajes "
+                "tampoco quedan registrados.\n"
+                "Al reactivar, retoma con el historial guardado antes de la pausa.\n\n"
+                "Elige la duración:"
+            ),
+            _build_pause_duration_keyboard(user_id),
+        )
+        return True
+
+    if action == "pause_days":
+        if len(parts) < 3:
+            await query.answer("Duración inválida", show_alert=True)
+            return True
+        try:
+            days_token = int(parts[2])
+        except ValueError:
+            await query.answer("Duración inválida", show_alert=True)
+            return True
+        days = None if days_token == 0 else days_token
+        from services import data_pause
+
+        ok, err = data_pause.pause(user_id, days=days)
+        if not ok:
+            await query.answer(err or "Error", show_alert=True)
+            return True
+        label = "indefinida" if days is None else f"{days} día(s)"
+        await query.answer(f"VIP pausado ({label})")
+        await _replace_with_detail(query, user_id, context=context)
+        return True
+
+    if action == "resume":
+        from services import data_pause
+
+        if not data_pause.resume(user_id):
+            await query.answer("No estaba pausado", show_alert=True)
+            return True
+        await query.answer("VIP reactivado")
+        await _replace_with_detail(query, user_id, context=context)
+        return True
+
     await query.answer()
     return True
 
@@ -1057,6 +1151,7 @@ async def _replace_with_ayuda(query) -> None:
         "`/notas <id>` — Ver notas y datos extraidos de un VIP\n"
         "`/nota <id> <texto>` — Agregar nota manual para un VIP\n"
         "`/borrar_notas <id>` — Limpiar todas las notas de un VIP\n"
+        "`👤 Perfil VIP` — Pausar/reactivar bot por usuario \\(sin registro ni respuestas\\)\n"
         "`/sandbox on|off <chat_id>` — Modo prueba sin persistencia\n"
         "`/sandbox perfil <name>` — Cambiar perfil \\(ultimo on\\)\n"
         "`/sandbox perfiles | estado | reset`\n\n"

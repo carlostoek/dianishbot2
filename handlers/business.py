@@ -169,6 +169,11 @@ async def _handle_business_message(
         if msg.from_user else str(chat_id)
     )
 
+    from services import data_pause
+    if data_pause.is_paused(chat_id):
+        log.info(f"VIP pausado — sin actividad del bot | chat {chat_id}")
+        return
+
     owner_id = connections.get(bc_id)
     if not owner_id and bc_id:
         try:

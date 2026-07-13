@@ -71,20 +71,22 @@ async def chat_write_lock(chat_id: int):
         yield
 
 
-def _active_chat_ids() -> set[int]:
-    from services import sandbox
+def _runtime_excluded(chat_id: int) -> bool:
+    from services import data_pause, sandbox
 
+    return sandbox.is_active(chat_id) or data_pause.is_paused(chat_id)
+
+
+def _active_chat_ids() -> set[int]:
     ids = set(timer_schedule.keys())
     for pending in pending_approval.values():
         ids.add(pending["chat_id"])
     for pending in pending_escalations.values():
         ids.add(pending["chat_id"])
-    return {cid for cid in ids if not sandbox.is_active(cid)}
+    return {cid for cid in ids if not _runtime_excluded(cid)}
 
 
 def _build_runtime_snapshot() -> dict:
-    from services import sandbox
-
     active = _active_chat_ids()
     timers_out = []
     for chat_id, meta in timer_schedule.items():
@@ -102,11 +104,11 @@ def _build_runtime_snapshot() -> dict:
         "timers": timers_out,
         "pending_approval": {
             str(k): v for k, v in pending_approval.items()
-            if not sandbox.is_active(v.get("chat_id", 0))
+            if not _runtime_excluded(v.get("chat_id", 0))
         },
         "pending_escalations": {
             str(k): v for k, v in pending_escalations.items()
-            if not sandbox.is_active(v.get("chat_id", 0))
+            if not _runtime_excluded(v.get("chat_id", 0))
         },
     }
 

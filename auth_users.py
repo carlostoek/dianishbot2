@@ -44,6 +44,7 @@ from handlers.admin_auth import (
     _build_trace_menu_keyboard,
     _build_user_list_keyboard,
     _build_user_detail_keyboard,
+    _build_pause_duration_keyboard,
     _build_confirm_delete_keyboard,
     _build_confirm_clear_notes_keyboard,
     _build_back_to_list_keyboard,
