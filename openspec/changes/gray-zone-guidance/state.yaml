@@ -1,6 +1,6 @@
 change: gray-zone-guidance
 created: 2026-07-13
-status: wu3-done
+status: verify-done
 design: openspec/changes/gray-zone-guidance/design.md
 canonical_product_design: docs/feedback-design.md
 artifact_store: openspec
@@ -34,7 +34,11 @@ phases:
   - id: apply
     status: done
   - id: verify
-    status: pending
+    status: done
+    completed: 2026-07-13
+    artifact: openspec/changes/gray-zone-guidance/verify-report.md
+    verdict: PASS_WITH_WARNINGS
+    tests: 588 passed
 product_locks:
   vip_freeze: true
   timeout_hours: 12
