@@ -63,7 +63,7 @@ async def _regen_approval_variant(ex_id: int) -> RegenResult:
     response = confidence = topic = failure = None
     regen_error = False
     try:
-        response, confidence, topic, failure = await cb.get_diana_response(
+        response, confidence, topic, _knowledge_gap, _gap_question, failure = await cb.get_diana_response(
             pending["chat_id"],
             should_abort=lambda: reply_gen.get(pending["chat_id"]) != pending["gen"],
         )

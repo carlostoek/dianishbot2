@@ -445,7 +445,7 @@ async def test_handle_diana_note_from_draft_regens_and_restores_ui(
         patch(
             "handlers.callbacks.get_diana_response",
             new_callable=AsyncMock,
-            return_value=("respuesta con nota", 85, "general", None),
+            return_value=("respuesta con nota", 85, "general", False, "", None),
         ) as mock_llm,
     ):
         result = await handle_diana_note(update, ctx)
@@ -486,7 +486,7 @@ async def test_handle_diana_note_from_draft_selects_new_variant(
         patch(
             "handlers.callbacks.get_diana_response",
             new_callable=AsyncMock,
-            return_value=("nueva variante", 80, "general", None),
+            return_value=("nueva variante", 80, "general", False, "", None),
         ),
     ):
         await handle_diana_note(update, make_context())
@@ -519,7 +519,7 @@ async def test_handle_diana_note_from_draft_regen_failure_restores_ui(
         patch(
             "handlers.callbacks.get_diana_response",
             new_callable=AsyncMock,
-            return_value=(None, 0, "", None),
+            return_value=(None, 0, "", False, "", None),
         ),
     ):
         await handle_diana_note(update, ctx)
@@ -728,7 +728,7 @@ async def test_handle_diana_note_expired_during_regen_no_crash(
 
     async def _regen_then_expire(*_args, **_kwargs):
         state.pending_approval.pop(ex_id, None)
-        return ("nueva", 80, "general", None)
+        return ("nueva", 80, "general", False, "", None)
 
     with (
         patch("handlers.callbacks.llm_mod.memory_service", mock_svc),
@@ -773,7 +773,7 @@ async def test_handle_diana_note_edit_failure_still_confirms(
         patch(
             "handlers.callbacks.get_diana_response",
             new_callable=AsyncMock,
-            return_value=("respuesta ok", 85, "general", None),
+            return_value=("respuesta ok", 85, "general", False, "", None),
         ),
     ):
         result = await handle_diana_note(update, ctx)
@@ -867,7 +867,7 @@ async def test_handle_diana_note_add_note_before_regen(
 
     async def _track_llm(*_args, **_kwargs):
         call_order.append("llm")
-        return ("resp", 80, "general", None)
+        return ("resp", 80, "general", False, "", None)
 
     def _track_add_note(*_args, **_kwargs):
         call_order.append("add_note")
@@ -912,7 +912,7 @@ async def test_a_note_to_save_e2e_chain(
         patch(
             "handlers.callbacks.get_diana_response",
             new_callable=AsyncMock,
-            return_value=("respuesta e2e", 88, "general", None),
+            return_value=("respuesta e2e", 88, "general", False, "", None),
         ),
     ):
         await handle_diana_note(msg_update, ctx)
@@ -1082,7 +1082,7 @@ async def test_handle_diana_note_clears_awaiting_note_after_save(
         patch(
             "handlers.callbacks.get_diana_response",
             new_callable=AsyncMock,
-            return_value=("ok", 80, "general", None),
+            return_value=("ok", 80, "general", False, "", None),
         ),
     ):
         await handle_diana_note(update, make_context())

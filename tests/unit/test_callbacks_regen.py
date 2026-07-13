@@ -117,7 +117,7 @@ async def test_a_regen_appends_variant_and_selects_new(
     with patch(
         "handlers.callbacks.get_diana_response",
         new_callable=AsyncMock,
-        return_value=("nueva respuesta", 80, "saludo", None),
+        return_value=("nueva respuesta", 80, "saludo", False, "", None),
     ):
         await handle_callback(update, make_context())
 
@@ -141,7 +141,7 @@ async def test_a_regen_does_not_call_save_example(
         patch(
             "handlers.callbacks.get_diana_response",
             new_callable=AsyncMock,
-            return_value=("otra", 75, "general", None),
+            return_value=("otra", 75, "general", False, "", None),
         ),
         patch("services.training.save_example") as mock_save,
     ):
@@ -338,7 +338,7 @@ async def test_a_regen_keeps_pending_when_no_response(
     with patch(
         "handlers.callbacks.get_diana_response",
         new_callable=AsyncMock,
-        return_value=(None, 0, "", None),
+        return_value=(None, 0, "", False, "", None),
     ):
         await handle_callback(update, make_context())
 
@@ -409,7 +409,7 @@ async def test_a_regen_skips_append_when_gen_stale_after_llm(
 
     async def _llm_then_bump(*_args, **_kwargs):
         state.reply_gen[VIP_CHAT_ID] = 99
-        return ("nueva", 80, "general", None)
+        return ("nueva", 80, "general", False, "", None)
 
     with patch(
         "handlers.callbacks.get_diana_response",
@@ -446,7 +446,7 @@ async def test_a_regen_failure_shows_banner_in_message(
     with patch(
         "handlers.callbacks.get_diana_response",
         new_callable=AsyncMock,
-        return_value=(None, 0, "", failure),
+        return_value=(None, 0, "", False, "", failure),
     ):
         await handle_callback(update, make_context())
 
@@ -468,7 +468,7 @@ async def test_a_regen_fail_aborted_shows_stale_banner(
     with patch(
         "handlers.callbacks.get_diana_response",
         new_callable=AsyncMock,
-        return_value=(None, 0, "", failure),
+        return_value=(None, 0, "", False, "", failure),
     ):
         await handle_callback(update, make_context())
 

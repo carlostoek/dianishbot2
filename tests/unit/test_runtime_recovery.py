@@ -311,7 +311,7 @@ async def test_auto_reply_accepts_explicit_delay():
 
     with (
         patch("asyncio.sleep", side_effect=track_sleep),
-        patch("handlers.timer.get_diana_response", new_callable=AsyncMock, return_value=(None, 0, "general", None)),
+        patch("handlers.timer.get_diana_response", new_callable=AsyncMock, return_value=(None, 0, "general", False, "", None)),
         patch("handlers.timer._finish_timer"),
     ):
         await auto_reply(AsyncMock(), chat_id, "vip", "bc", gen, delay_sec=42.5)

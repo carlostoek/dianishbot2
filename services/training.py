@@ -68,9 +68,10 @@ def init_db() -> sqlite3.Connection:
             context TEXT
         )
     """)
-    from services import chat_history, promo_info
+    from services import chat_history, promo_info, knowledge
     chat_history.init_schema(conn)
     promo_info.init_schema(conn)
+    knowledge.init_schema(conn)
     conn.commit()
     return conn
 

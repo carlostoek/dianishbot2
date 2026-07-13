@@ -25,7 +25,7 @@ async def test_retries_on_empty_response_then_succeeds(in_memory_training_db):
     with patch.object(llm_mod, "raw_call", new_callable=AsyncMock) as mock_raw:
         mock_raw.side_effect = [(p, None, None) for p in payloads]
         with patch("services.llm.asyncio.sleep", new_callable=AsyncMock):
-            response, confidence, topic, failure = await llm_mod.get_diana_response(
+            response, confidence, topic, knowledge_gap, gap_question, failure = await llm_mod.get_diana_response(
                 42, max_retries=2, retry_delay_sec=0,
             )
 
@@ -45,7 +45,7 @@ async def test_returns_none_after_exhausted_retries(in_memory_training_db):
         return_value=(None, "error_http_api", "HTTP 503"),
     ) as mock_raw:
         with patch("services.llm.asyncio.sleep", new_callable=AsyncMock):
-            response, confidence, topic, failure = await llm_mod.get_diana_response(
+            response, confidence, topic, knowledge_gap, gap_question, failure = await llm_mod.get_diana_response(
                 99, max_retries=3, retry_delay_sec=0,
             )
 
@@ -71,7 +71,7 @@ async def test_propagates_empty_api_detail_after_retries(in_memory_training_db):
         return_value=(None, "api_respuesta_vacia", api_detail),
     ) as mock_raw:
         with patch("services.llm.asyncio.sleep", new_callable=AsyncMock):
-            response, confidence, topic, failure = await llm_mod.get_diana_response(
+            response, confidence, topic, knowledge_gap, gap_question, failure = await llm_mod.get_diana_response(
                 77, max_retries=2, retry_delay_sec=0,
             )
 
@@ -96,7 +96,7 @@ async def test_aborts_retry_when_should_abort_returns_true(in_memory_training_db
         return_value=(None, "error_http_api", "HTTP 503"),
     ) as mock_raw:
         with patch("services.llm.asyncio.sleep", new_callable=AsyncMock):
-            response, confidence, topic, failure = await llm_mod.get_diana_response(
+            response, confidence, topic, knowledge_gap, gap_question, failure = await llm_mod.get_diana_response(
                 7,
                 max_retries=5,
                 retry_delay_sec=0,
@@ -120,7 +120,7 @@ async def test_retries_on_invalid_json_then_succeeds(in_memory_training_db):
     with patch.object(llm_mod, "raw_call", new_callable=AsyncMock) as mock_raw:
         mock_raw.side_effect = [(p, None, None) for p in payloads]
         with patch("services.llm.asyncio.sleep", new_callable=AsyncMock):
-            response, confidence, topic, failure = await llm_mod.get_diana_response(
+            response, confidence, topic, knowledge_gap, gap_question, failure = await llm_mod.get_diana_response(
                 55, max_retries=2, retry_delay_sec=0,
             )
 
@@ -139,7 +139,7 @@ async def test_recovers_truncated_json(in_memory_training_db):
     with patch.object(
         llm_mod, "raw_call", new_callable=AsyncMock, return_value=(truncated, None, None),
     ):
-        response, confidence, topic, failure = await llm_mod.get_diana_response(
+        response, confidence, topic, knowledge_gap, gap_question, failure = await llm_mod.get_diana_response(
             88, max_retries=1, retry_delay_sec=0,
         )
 
