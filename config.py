@@ -77,7 +77,7 @@ DB_FILE = "diana_training.db"
 MAX_FEW_SHOTS = 3
 
 # Gray-zone guidance → topic policies (flag off = zero VIP path change)
-KNOWLEDGE_GAP_ENABLED = False
+KNOWLEDGE_GAP_ENABLED = True
 GUIDANCE_TIMEOUT_HOURS = 12
 GUIDANCE_POLICY_PRIORITY = 100
 

@@ -55,7 +55,7 @@ The bot uses Telegram **Business Connections** (Chat Automation API).
 8. Save example + background memory extraction
 
 **Fourth flow — gray-zone guidance** (after LLM success + escalation handling, before `save_example`):
-- Flag: `KNOWLEDGE_GAP_ENABLED` (default **False**). When off, gap fields are ignored — zero path change.
+- Flag: `KNOWLEDGE_GAP_ENABLED` (default **True**). When off, gap fields are ignored — zero path change.
 - When on and LLM sets `knowledge_gap` + `gap_question`:
   1. `match_policies` → **hit**: one regen with policies injected → normal save/approve|deliver (anti-reask; no Diana DM).
   2. **miss**: open consult (`guidance_requests` + `pending_guidance`), DM Diana only (`g:` UI), **VIP freeze**, finish timer without save/send.
