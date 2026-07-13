@@ -103,7 +103,7 @@ async def test_stale_auto_reply_does_not_deliver(monkeypatch, in_memory_training
 
     async def llm_then_bump(*_args, **_kwargs):
         state.reply_gen[chat_id] = stale_gen + 1
-        return ("respuesta vieja", 90, "saludo", None)
+        return ("respuesta vieja", 90, "saludo", False, "", None)
 
     with (
         patch("asyncio.sleep", new_callable=AsyncMock),

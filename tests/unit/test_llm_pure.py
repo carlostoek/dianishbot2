@@ -54,6 +54,15 @@ class TestTryParseLlmJson:
         assert fail is None
         assert parsed["response"] == "hola"
 
+    def test_parses_optional_gap_fields_when_present(self):
+        parsed, fail = _try_parse_llm_json(
+            '{"response": "x", "confidence": 50, "topic": "t",'
+            ' "knowledge_gap": true, "gap_question": "how?"}',
+        )
+        assert fail is None
+        assert parsed["knowledge_gap"] is True
+        assert parsed["gap_question"] == "how?"
+
     def test_strips_deepseek_thinking_suffix(self):
         raw = (
             '{"response": "holis 😊 qué haces? jsjs", "confidence": 85, "topic": "saludo"}'

@@ -83,7 +83,7 @@ async def _generate_from_escalation(bot, esc_id: int) -> str | None:
     pending["gen"] = gen
     _save_runtime_state()
 
-    response, confidence, topic, failure = await cb.get_diana_response(
+    response, confidence, topic, _knowledge_gap, _gap_question, failure = await cb.get_diana_response(
         chat_id,
         no_escalation=True,
         should_abort=lambda: reply_gen.get(chat_id) != gen,

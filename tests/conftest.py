@@ -299,6 +299,37 @@ async def test_db(tmp_path):
             informed_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS topic_policies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            topic TEXT NOT NULL,
+            keywords TEXT,
+            policy_summary TEXT NOT NULL,
+            example_response TEXT,
+            priority INTEGER DEFAULT 100,
+            source_question TEXT,
+            source_answer_raw TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guidance_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            username TEXT,
+            ts TEXT NOT NULL,
+            topic TEXT,
+            gap_question TEXT NOT NULL,
+            context TEXT,
+            draft_response TEXT,
+            diana_answer_raw TEXT,
+            policy_id INTEGER,
+            status TEXT DEFAULT 'pending',
+            resolved_at TEXT
+        )
+    """)
     conn.commit()
     yield conn
     conn.close()
@@ -334,3 +365,14 @@ def promo_info_db(test_db):
     promo_mod.init_schema(test_db)
     yield test_db
     promo_mod.db = old
+
+
+@pytest.fixture
+def knowledge_db(test_db):
+    """Wire knowledge module db for unit tests."""
+    import services.knowledge as knowledge_mod
+    old = knowledge_mod.db
+    knowledge_mod.db = test_db
+    knowledge_mod.init_schema(test_db)
+    yield test_db
+    knowledge_mod.db = old

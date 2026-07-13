@@ -62,10 +62,11 @@ async def auto_reply(
 
     log.info(f"Cobertura activada para {username} ({chat_id})")
 
-    response, confidence, topic, failure = await get_diana_response(
+    response, confidence, topic, knowledge_gap, gap_question, failure = await get_diana_response(
         chat_id,
         should_abort=lambda: reply_gen.get(chat_id) != gen,
     )
+    # knowledge_gap / gap_question ignored while KNOWLEDGE_GAP_ENABLED is off (WU2 consult path)
     if not response:
         if failure and failure.reason != FAIL_ABORTED:
             from services import sandbox

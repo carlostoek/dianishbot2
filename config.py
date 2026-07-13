@@ -76,6 +76,11 @@ OBSERVE_UNAUTHORIZED = True          # escuchar chats no autorizados (sin auto-r
 DB_FILE = "diana_training.db"
 MAX_FEW_SHOTS = 3
 
+# Gray-zone guidance → topic policies (flag off = zero VIP path change)
+KNOWLEDGE_GAP_ENABLED = False
+GUIDANCE_TIMEOUT_HOURS = 12
+GUIDANCE_POLICY_PRIORITY = 100
+
 # Non-VIP promo-info autoreply (fixed templates; no LLM / approval)
 NON_VIP_PROMO_AUTOREPLY_ENABLED = True
 NON_VIP_PROMO_TRIGGER = "Quiero más información 🔥"  # exact after str.strip()

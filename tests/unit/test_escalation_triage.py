@@ -215,7 +215,7 @@ async def test_e_gen_creates_approval_draft(
         patch(
             "handlers.callbacks.get_diana_response",
             new_callable=AsyncMock,
-            return_value=("hola besito", 90, "coqueteo", None),
+            return_value=("hola besito", 90, "coqueteo", False, "", None),
         ),
         patch("handlers.callbacks.save_example", return_value=101) as mock_save,
         patch(

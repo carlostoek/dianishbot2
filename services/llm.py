@@ -67,6 +67,8 @@ DIANA_RESPONSE_SCHEMA = {
         "response": {"type": "string"},
         "confidence": {"type": "integer"},
         "topic": {"type": "string"},
+        "knowledge_gap": {"type": "boolean"},
+        "gap_question": {"type": "string"},
     },
     "required": ["response", "confidence", "topic"],
     "additionalProperties": False,
@@ -121,6 +123,27 @@ def _parse_confidence(value) -> int:
     except (TypeError, ValueError):
         log.warning(f"Invalid confidence value {value!r}, defaulting to 100")
         return 100
+
+
+def _parse_gap_fields(parsed: dict) -> tuple[bool, str]:
+    """Normalize optional knowledge_gap / gap_question → (bool, str).
+
+    Missing or nullish → False / "".
+    """
+    raw_gap = parsed.get("knowledge_gap", False)
+    if raw_gap is None:
+        knowledge_gap = False
+    elif isinstance(raw_gap, str):
+        knowledge_gap = raw_gap.strip().lower() in ("true", "1", "yes", "sí", "si")
+    else:
+        knowledge_gap = bool(raw_gap)
+
+    raw_q = parsed.get("gap_question", "")
+    if raw_q is None:
+        gap_question = ""
+    else:
+        gap_question = str(raw_q).strip()
+    return knowledge_gap, gap_question
 
 
 def guess_topic(text: str) -> str:
@@ -423,15 +446,19 @@ async def get_diana_response(
     retry_delay_sec: float | None = None,
     should_abort: Callable[[], bool] | None = None,
     no_escalation: bool = False,
-) -> tuple[str | None, int, str, LLMFailure | None]:
-    """Devuelve (texto, confidence 0-100, topic, fallo). fallo es None si hubo respuesta."""
+) -> tuple[str | None, int, str, bool, str, LLMFailure | None]:
+    """Devuelve (texto, confidence, topic, knowledge_gap, gap_question, fallo).
+
+    knowledge_gap / gap_question normalizan missing → False / "".
+    fallo es None si hubo respuesta.
+    """
     from services.training import get_few_shots, build_few_shot_block, build_escalation_fp_block
 
     from services.chat_history import ensure_loaded
     ensure_loaded(chat_id)
     msgs = history.get(chat_id, [])
     if not msgs:
-        return None, 0, "general", LLMFailure(FAIL_NO_HISTORY, 0, "historial vacío")
+        return None, 0, "general", False, "", LLMFailure(FAIL_NO_HISTORY, 0, "historial vacío")
 
     last_user = next(
         (m["content"] for m in reversed(msgs) if m["role"] == "user"), "",
@@ -480,11 +507,19 @@ FORMATO OBLIGATORIO: responde ÚNICAMENTE con JSON válido, sin texto extra ni b
 {
   "response": "tu respuesta aquí",
   "confidence": 85,
-  "topic": "etiqueta_corta"
+  "topic": "etiqueta_corta",
+  "knowledge_gap": false,
+  "gap_question": ""
 }
 confidence = 0–100. 100 = respuesta perfecta y específica. 70 = aceptable pero genérica. <70 = no sabía bien qué responder.
 topic = 1–3 palabras (ej: "precio_vip", "contenido", "horarios", "saludo", "acceso").
 Si debes escalar a Diana real (pagos, crisis, límites del programa, sospecha de bot): topic = "escalado_humano".
+
+knowledge_gap / gap_question — doctrina (NO tono, NO FAQ, NO escalado):
+- knowledge_gap=true SOLO si la situación es NUEVA o sin regla clara en el prompt/notas/políticas, o hay opciones contradictorias, o implica un compromiso comercial/operativo que no debes inventar.
+- Si knowledge_gap=true, gap_question debe ser UNA pregunta concreta para Diana (doctrina/política).
+- NUNCA marques knowledge_gap por: FAQ ya cubierto (precios publicados, horarios, TOPIC_MAP), duda de tono/estilo (usa confidence baja), ni casos de escalado_humano.
+- Si el caso es escalado_humano, usa topic de escalado y knowledge_gap=false (la escalación gana).
 
 REGLAS CRÍTICAS DE ESTILO (prioridad máxima):
 - NUNCA uses la palabra "la neta" ni variaciones. Está prohibida.
@@ -551,7 +586,7 @@ REGLAS CRÍTICAS DE ESTILO (prioridad máxima):
                     "parsed": None,
                     "failure": {"reason": FAIL_ABORTED, "attempts": attempt, "detail": "nuevo mensaje del usuario"},
                 })
-            return None, 0, topic_guess, LLMFailure(FAIL_ABORTED, attempt, "nuevo mensaje del usuario")
+            return None, 0, topic_guess, False, "", LLMFailure(FAIL_ABORTED, attempt, "nuevo mensaje del usuario")
 
         raw, api_fail, api_detail = await raw_call(
             messages=messages,
@@ -594,20 +629,27 @@ REGLAS CRÍTICAS DE ESTILO (prioridad máxima):
                 await asyncio.sleep(delay)
             continue
 
+        knowledge_gap, gap_question = _parse_gap_fields(parsed)
+        conf = _parse_confidence(parsed.get("confidence", 100))
+        topic_out = parsed.get("topic") or topic_guess
         if _trace_injected is not None:
             trace.trace_call(chat_id, injected=_trace_injected, output={
                 "raw": raw,
                 "parsed": {
                     "response": response,
-                    "confidence": _parse_confidence(parsed.get("confidence", 100)),
-                    "topic": parsed.get("topic") or topic_guess,
+                    "confidence": conf,
+                    "topic": topic_out,
+                    "knowledge_gap": knowledge_gap,
+                    "gap_question": gap_question,
                 },
                 "failure": None,
             })
         return (
             response,
-            _parse_confidence(parsed.get("confidence", 100)),
-            parsed.get("topic") or topic_guess,
+            conf,
+            topic_out,
+            knowledge_gap,
+            gap_question,
             None,
         )
 
@@ -622,4 +664,4 @@ REGLAS CRÍTICAS DE ESTILO (prioridad máxima):
             "parsed": None,
             "failure": {"reason": last_reason, "attempts": attempts, "detail": last_detail},
         })
-    return None, 0, topic_guess, failure
+    return None, 0, topic_guess, False, "", failure
