@@ -1151,6 +1151,8 @@ async def _replace_with_ayuda(query) -> None:
         "`/notas <id>` — Ver notas y datos extraidos de un VIP\n"
         "`/nota <id> <texto>` — Agregar nota manual para un VIP\n"
         "`/borrar_notas <id>` — Limpiar todas las notas de un VIP\n"
+        "`/politicas [topic]` — Listar políticas de tema \\(doctrina zona gris\\)\n"
+        "`/borrar_politica <id>` — Desactivar política \\(soft\\)\n"
         "`👤 Perfil VIP` — Pausar/reactivar bot por usuario \\(sin registro ni respuestas\\)\n"
         "`/sandbox on|off <chat_id>` — Modo prueba sin persistencia\n"
         "`/sandbox perfil <name>` — Cambiar perfil \\(ultimo on\\)\n"
@@ -1502,6 +1504,73 @@ async def handle_admin_message(
             f"✓ Notas borradas para {target_id}." if ok
             else f"No había notas para {target_id}."
         )
+        return True
+
+    if msg.text and msg.text.startswith("/politicas"):
+        from services import knowledge
+        parts = msg.text.split(maxsplit=1)
+        topic_filter = parts[1].strip() if len(parts) > 1 else None
+        try:
+            rows = knowledge.list_policies_filtered(topic=topic_filter)
+        except Exception as e:
+            log.error(f"/politicas error: {e}")
+            await msg.reply_text("No pude listar políticas (DB no disponible).")
+            return True
+        if not rows:
+            hint = f" para tema '{topic_filter}'" if topic_filter else ""
+            await msg.reply_text(
+                f"Sin políticas activas{hint}.\n"
+                "Uso: /politicas [topic]"
+            )
+            return True
+        lines = [f"Políticas activas ({len(rows)})" + (
+            f" — filtro: {topic_filter}" if topic_filter else ""
+        ), "─" * 28]
+        for p in rows[:30]:
+            kws = ", ".join(p.get("keywords") or []) or "—"
+            summary = (p.get("policy_summary") or "")[:120]
+            lines.append(
+                f"#{p['id']} [{p.get('topic') or '—'}] prio={p.get('priority')}\n"
+                f"  {summary}\n"
+                f"  kw: {kws}"
+            )
+        if len(rows) > 30:
+            lines.append(f"… y {len(rows) - 30} más")
+        lines.append("\nDesactivar: /borrar_politica <id>")
+        await msg.reply_text("\n".join(lines))
+        return True
+
+    if msg.text and msg.text.startswith("/borrar_politica"):
+        from services import knowledge
+        parts = msg.text.split()
+        if len(parts) < 2:
+            await msg.reply_text("Uso: /borrar_politica <id>")
+            return True
+        try:
+            pid = int(parts[1])
+        except ValueError:
+            await msg.reply_text("ID inválido. Uso: /borrar_politica <id>")
+            return True
+        try:
+            row = knowledge.get_policy(pid)
+            if row is None:
+                await msg.reply_text(f"No existe política #{pid}.")
+                return True
+            if not row.get("is_active", 1):
+                await msg.reply_text(f"Política #{pid} ya estaba inactiva.")
+                return True
+            ok = knowledge.deactivate_policy(pid)
+        except Exception as e:
+            log.error(f"/borrar_politica error: {e}")
+            await msg.reply_text("No pude desactivar la política.")
+            return True
+        if ok:
+            await msg.reply_text(
+                f"✓ Política #{pid} desactivada (is_active=0). "
+                f"Tema: {row.get('topic') or '—'}"
+            )
+        else:
+            await msg.reply_text(f"No se pudo desactivar #{pid}.")
         return True
 
     if msg.forward_origin:

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import DIANA_ADMIN_CHAT_ID
+from config import DIANA_ADMIN_CHAT_ID, GUIDANCE_TIMEOUT_HOURS
 from state import (
     awaiting_correction,
     awaiting_guidance_answer,
@@ -19,15 +20,16 @@ from state import (
     _save_runtime_state,
 )
 from services import knowledge, sandbox
-from services.delivery import deliver_vip_response
-from services.training import save_example
+from services.llm import get_diana_response
 
 from .shared import _clear_awaiting_note_with_prompt_restore
-from .approval import notify_diana_approval
 
 log = logging.getLogger("diana")
 
 EXPIRED_GUIDANCE_TEXT = "Esta consulta ya expiró o fue procesada."
+
+# Timeout scanner interval (seconds). Independent of reengagement enable flag.
+_GUIDANCE_TIMEOUT_SCAN_SEC = 300
 
 
 def _format_guidance_text(
@@ -106,6 +108,7 @@ async def _close_pending(
     *,
     status: str,
     diana_answer_raw: str | None = None,
+    policy_id: int | None = None,
 ) -> dict | None:
     """Pop runtime pending and resolve DB row. Returns pending dict or None."""
     pending = pending_guidance.pop(guidance_id, None)
@@ -121,6 +124,7 @@ async def _close_pending(
                 guidance_id,
                 status=status,
                 diana_answer_raw=diana_answer_raw,
+                policy_id=policy_id,
             )
         except Exception as e:
             log.debug(f"resolve_guidance_request({guidance_id}): {e}")
@@ -176,9 +180,8 @@ async def handle_guidance_action(
             f"✏️ Escribe tu criterio para la zona gris "
             f"(VIP @{pending.get('username', '?')}):\n\n"
             f"Pregunta: {pending.get('gap_question') or '—'}\n\n"
-            f"Tu respuesta se guardará como doctrina (política de tema) "
-            f"en el siguiente paso. Por ahora se usará el borrador tentativo "
-            f"para el VIP."
+            f"Tu respuesta se destilará como política de tema y se regenerará "
+            f"el borrador del VIP con esa doctrina."
         )
         return
 
@@ -237,14 +240,42 @@ async def handle_guidance_action(
     await cq.answer()
 
 
+async def _persist_policy_from_answer(
+    *,
+    pending: dict,
+    diana_answer: str,
+    chat_id: int,
+) -> int | None:
+    """Distill + create_policy. Returns policy_id or None if sandbox/skip."""
+    if not sandbox.should_persist(chat_id):
+        return None
+    distilled = await knowledge.distill_guidance(
+        gap_question=pending.get("gap_question") or "",
+        diana_answer=diana_answer,
+        context=history.get(chat_id, []),
+        topic_hint=pending.get("topic") or "",
+    )
+    try:
+        return knowledge.create_policy(
+            topic=distilled.get("topic") or pending.get("topic") or "general",
+            keywords=distilled.get("keywords") or [],
+            policy_summary=distilled.get("policy_summary") or diana_answer[:500],
+            example_response=distilled.get("example_response") or "",
+            priority=distilled.get("priority"),
+            source_question=pending.get("gap_question") or "",
+            source_answer_raw=diana_answer,
+        )
+    except Exception as e:
+        log.error(f"create_policy after distill failed: {e}")
+        return None
+
+
 async def handle_diana_guidance_answer(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
 ) -> bool:
-    """Capture free-text answer after g:answer. WU2: store raw + use_draft path.
+    """Capture free-text after g:answer → distill → policy → regen → draft path.
 
-    Full distill+regen is WU3. Here we persist diana_answer_raw, mark answered,
-    then re-enter the normal draft pipeline with the stored tentative draft so
-    the VIP is not left frozen forever.
+    Stale gen: still stores policy + answered status, no VIP send.
     """
     msg = update.message
     if not msg or not msg.text:
@@ -264,47 +295,81 @@ async def handle_diana_guidance_answer(
         return True
 
     chat_id = pending["chat_id"]
-    draft = pending.get("draft_response") or ""
-    conf = int(pending.get("confidence") or 0)
     topic = pending.get("topic") or "general"
     gen = pending.get("gen", 0)
 
+    policy_id = await _persist_policy_from_answer(
+        pending=pending, diana_answer=stripped, chat_id=chat_id,
+    )
+
+    # Stale VIP generation: keep policy, do not send old draft
     if reply_gen.get(chat_id) != gen:
         await _close_pending(
-            guidance_id, status="answered", diana_answer_raw=stripped,
+            guidance_id,
+            status="answered",
+            diana_answer_raw=stripped,
+            policy_id=policy_id,
         )
         await msg.reply_text(
-            "Guardé tu criterio, pero el VIP ya escribió de nuevo — "
-            "no se envía el borrador viejo. La política completa se aplicará "
-            "en el siguiente turno (WU3 distill)."
+            "Guardé tu criterio como política, pero el VIP ya escribió de nuevo — "
+            "no se envía el borrador viejo. La doctrina se aplicará en el próximo turno."
         )
+        log.info(f"Guidance {guidance_id} answered+policy; stale gen — no VIP send")
         return True
 
     await _close_pending(
-        guidance_id, status="answered", diana_answer_raw=stripped,
+        guidance_id,
+        status="answered",
+        diana_answer_raw=stripped,
+        policy_id=policy_id,
     )
+
+    # Regen with policies now injectable via get_diana_response
+    response, confidence, regen_topic, _kg, _gq, failure = await get_diana_response(
+        chat_id,
+        should_abort=lambda: reply_gen.get(chat_id) != gen,
+    )
+    if not response:
+        # Fall back to stored tentative draft so VIP is not left frozen
+        response = pending.get("draft_response") or ""
+        confidence = int(pending.get("confidence") or 0)
+        regen_topic = topic
+        log.warning(
+            f"Guidance {guidance_id} regen failed ({failure}); using stored draft"
+        )
+
+    if reply_gen.get(chat_id) != gen:
+        await msg.reply_text(
+            "Política guardada, pero el VIP escribió de nuevo durante la regeneración — "
+            "no se envía el borrador."
+        )
+        return True
+
     ex_id = await enter_normal_draft_path(
         context.bot,
         chat_id=chat_id,
         bc_id=pending.get("bc_id") or "",
         username=pending.get("username") or "",
         gen=gen,
-        response=draft,
-        confidence=conf,
-        topic=topic,
+        response=response,
+        confidence=confidence,
+        topic=regen_topic or topic,
     )
     if ex_id is None:
         await msg.reply_text(
-            "Criterio guardado, pero no se pudo abrir el borrador para el VIP."
+            "Criterio y política guardados, pero no se pudo abrir el borrador para el VIP."
         )
     else:
+        degraded = ""
         await msg.reply_text(
-            f"Criterio guardado (consulta #{guidance_id}). "
-            f"Se abrió el borrador tentativo por el camino normal "
-            f"(distill+regen llega en WU3)."
+            f"✓ Criterio guardado como política"
+            f"{f' #{policy_id}' if policy_id else ''}"
+            f" (consulta #{guidance_id}). "
+            f"Borrador regenerado y abierto por el camino normal."
+            f"{degraded}"
         )
     log.info(
-        f"Guidance {guidance_id} answered (raw stored); draft path example={ex_id}"
+        f"Guidance {guidance_id} answered → policy={policy_id} regen example={ex_id}"
     )
     return True
 
@@ -355,3 +420,97 @@ async def supersede_guidance_for_chat(chat_id: int) -> int:
         closed += 1
         log.info(f"Guidance {gid} superseded (owner inbound chat {chat_id})")
     return closed
+
+
+def _parse_created_at(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+async def process_guidance_timeouts(bot) -> int:
+    """Close open guidances older than GUIDANCE_TIMEOUT_HOURS via use_draft path.
+
+    Returns number of timed-out requests processed. VIP freeze holds until this runs.
+    """
+    cutoff = datetime.now() - timedelta(hours=GUIDANCE_TIMEOUT_HOURS)
+    timed_out = 0
+    for gid, pending in list(pending_guidance.items()):
+        created = _parse_created_at(pending.get("created_at"))
+        if created is None or created > cutoff:
+            continue
+
+        chat_id = pending["chat_id"]
+        gen = pending.get("gen", 0)
+        draft = pending.get("draft_response") or ""
+        conf = int(pending.get("confidence") or 0)
+        topic = pending.get("topic") or "general"
+        username = pending.get("username") or ""
+
+        await _close_pending(gid, status="timeout")
+        timed_out += 1
+
+        # Stale gen: close only, no VIP send
+        if reply_gen.get(chat_id) != gen:
+            log.info(f"Guidance {gid} timeout but gen stale — no VIP send")
+            if DIANA_ADMIN_CHAT_ID:
+                try:
+                    await bot.send_message(
+                        chat_id=DIANA_ADMIN_CHAT_ID,
+                        text=(
+                            f"⏱ Timeout consulta #{gid} (@{username}): "
+                            f"el VIP ya escribió de nuevo — no se abrió el borrador viejo."
+                        ),
+                    )
+                except Exception as e:
+                    log.debug(f"timeout stale notify: {e}")
+            continue
+
+        ex_id = await enter_normal_draft_path(
+            bot,
+            chat_id=chat_id,
+            bc_id=pending.get("bc_id") or "",
+            username=username,
+            gen=gen,
+            response=draft,
+            confidence=conf,
+            topic=topic,
+        )
+        if DIANA_ADMIN_CHAT_ID:
+            try:
+                await bot.send_message(
+                    chat_id=DIANA_ADMIN_CHAT_ID,
+                    text=(
+                        f"⏱ Timeout ({GUIDANCE_TIMEOUT_HOURS}h) consulta #{gid} "
+                        f"(@{username}). Se abrió el borrador tentativo por el "
+                        f"camino normal"
+                        f"{f' (ejemplo {ex_id})' if ex_id else ''}."
+                    ),
+                )
+            except Exception as e:
+                log.error(f"timeout notify error: {e}")
+        log.info(f"Guidance {gid} → timeout (example={ex_id})")
+
+    return timed_out
+
+
+async def _timeout_scheduler_loop(app) -> None:
+    while True:
+        try:
+            await process_guidance_timeouts(app.bot)
+        except Exception as e:
+            log.error(f"Guidance timeout scanner error: {e}")
+        await asyncio.sleep(float(_GUIDANCE_TIMEOUT_SCAN_SEC))
+
+
+def start_timeout_scheduler(app) -> None:
+    """Start background guidance timeout scanner."""
+    asyncio.create_task(_timeout_scheduler_loop(app))
+    log.info(
+        "Guidance timeout scheduler started (interval=%ss, hours=%s)",
+        _GUIDANCE_TIMEOUT_SCAN_SEC,
+        GUIDANCE_TIMEOUT_HOURS,
+    )

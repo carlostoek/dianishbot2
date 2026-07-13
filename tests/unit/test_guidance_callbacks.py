@@ -280,10 +280,11 @@ async def test_g_use_draft_autonomous_delivers(
 
 
 @pytest.mark.asyncio
-async def test_free_text_saves_answer_and_use_draft_path(
+async def test_free_text_saves_policy_and_regens(
     make_mock_update, make_context, admin_user, guidance_pending,
     in_memory_training_db,
 ):
+    """WU3: free-text → distill → policy → regen → normal draft path."""
     from services import knowledge
     real_gid = knowledge.create_guidance_request(
         chat_id=VIP_CHAT_ID,
@@ -305,11 +306,30 @@ async def test_free_text_saves_answer_and_use_draft_path(
         text="No ofrezcas videollamada fuera de tarifa. Redirigí a packs.",
         user=admin_user,
     )
+    distilled = {
+        "topic": "limites",
+        "policy_summary": "No ofrezcas videollamada fuera de tarifa.",
+        "example_response": "no lo hago",
+        "keywords": ["videollamada"],
+        "priority": 100,
+        "degraded": False,
+    }
+    regen = ("respuesta regenerada", 88, "limites", False, "", None)
 
     with (
+        patch(
+            "handlers.callbacks.guidance.knowledge.distill_guidance",
+            new_callable=AsyncMock,
+            return_value=distilled,
+        ),
+        patch(
+            "handlers.callbacks.guidance.get_diana_response",
+            new_callable=AsyncMock,
+            return_value=regen,
+        ),
         patch("handlers.timer._is_supervised_for_chat", return_value=True),
         patch("handlers.timer.notify_diana_approval", new_callable=AsyncMock) as mock_notify,
-        patch("handlers.timer.save_example", return_value=600),
+        patch("handlers.timer.save_example", return_value=600) as mock_save,
         patch("handlers.timer.deliver_vip_response", new_callable=AsyncMock) as mock_deliver,
     ):
         handled = await handle_diana_guidance_answer(update, make_context())
@@ -320,7 +340,10 @@ async def test_free_text_saves_answer_and_use_draft_path(
     req = knowledge.get_guidance_request(real_gid)
     assert req["status"] == "answered"
     assert "videollamada" in (req["diana_answer_raw"] or "")
-    mock_notify.assert_awaited_once()  # WU2: use draft path after capture
+    assert req["policy_id"] is not None
+    mock_save.assert_called_once()
+    assert mock_save.call_args[0][3] == "respuesta regenerada"
+    mock_notify.assert_awaited_once()
     mock_deliver.assert_not_awaited()
 
 
