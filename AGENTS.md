@@ -41,7 +41,7 @@ The bot uses Telegram **Business Connections** (Chat Automation API).
 | **State**      | Runtime in-memory state                 | `state.py`                       | Shared dicts (history, timers, pending approvals) |
 | **Auth**       | VIP allowlist + admin commands          | `auth_users.py`                  | Only VIP management and `/usuarios`, `/nota`, etc. |
 | **Handlers**   | Telegram I/O only                       | `handlers/`                      | Routing, business messages, timers, callbacks. **No business logic** |
-| **Services**   | Core business logic                     | `services/`                      | LLM calls, delivery, training, memory, reengagement |
+| **Services**   | Core business logic                     | `services/`                      | LLM, delivery, training, memory, reengagement, knowledge |
 | **Tools**      | Standalone utilities                    | `extractor.py`                   | Telethon-based chat export |
 
 **Data flow for a VIP message** (memorize this):
@@ -49,15 +49,26 @@ The bot uses Telegram **Business Connections** (Chat Automation API).
 2. Authorization check
 3. Escalation detection
 4. Timer scheduling (`timer.py`)
-5. `get_diana_response()` (memory + few-shots injection)
+5. `get_diana_response()` — prompt order: base → temporal → memory → **topic policies** → few-shots → escalation FP → format
 6. Approval gate (if `APPROVAL_MODE=True`) or direct delivery
 7. `deliver_vip_response()` (human-like behavior)
 8. Save example + background memory extraction
 
+**Fourth flow — gray-zone guidance** (after LLM success + escalation handling, before `save_example`):
+- Flag: `KNOWLEDGE_GAP_ENABLED` (default **False**). When off, gap fields are ignored — zero path change.
+- When on and LLM sets `knowledge_gap` + `gap_question`:
+  1. `match_policies` → **hit**: one regen with policies injected → normal save/approve|deliver (anti-reask; no Diana DM).
+  2. **miss**: open consult (`guidance_requests` + `pending_guidance`), DM Diana only (`g:` UI), **VIP freeze**, finish timer without save/send.
+- VIP freeze while pending: no `deliver_vip_response` / `mark_as_read` / `simulate_typing` / reengage / `save_example` of the gap draft.
+- Diana answer → `knowledge.distill_guidance` → `topic_policies` → regen → supervised approval **or** autonomous deliver.
+- Timeout `GUIDANCE_TIMEOUT_HOURS` (12) ≡ `g:use_draft` (stored draft → normal pipeline). Statuses: pending|answered|skipped|timeout|superseded.
+- Logic lives in `services/knowledge.py`; handlers are Telegram I/O only.
+
 **Idle re-engagement** (independent of the VIP reply flow above):
 - On authorized VIP inbound (not edit / owner / observe-only / sandbox), `business.py` calls `reengagement.touch_inbound` to advance the silence-cycle clock.
-- `router._post_init` starts `reengagement.start_scheduler` alongside history backfill.
+- `router._post_init` starts `reengagement.start_scheduler` alongside history backfill and the guidance timeout scanner.
 - The scanner in `services/reengagement.py` is **independent of `auto_reply` / LLM / approval**: fixed Spanish templates, direct send, Diana notify. See `REENGAGE_*` in `config.py`.
+- Open `pending_guidance` blocks re-engagement for that chat (freeze completeness).
 
 ---
 
@@ -77,6 +88,10 @@ All inline keyboard callbacks use the format: `prefix:action:id`
 - `a:` → Approval flow (`approve`, `fix`, `note`, `regen`, `prev`, `next`)
 - `t:` → Training feedback (`good`, `bad`, `fix`)
 - `au:` → VIP allowlist management (`del`)
+- `e:` → Escalation triage (`valid`, `fp`, `gen`)
+- `g:` → Gray-zone guidance (`answer`, `use_draft`, `skip`)
+
+Router free-text await order (Diana DM): admin_note → **guidance** → note → correction.
 
 ---
 
@@ -85,6 +100,8 @@ All inline keyboard callbacks use the format: `prefix:action:id`
 Key commands:
 - `/usuarios` — Manage VIP allowlist
 - `/notas <user_id>`, `/nota <user_id> <text>`, `/borrar_notas <user_id>`
+- `/politicas [topic]` — List active topic policies (doctrine)
+- `/borrar_politica <id>` — Soft-deactivate a policy (`is_active=0`)
 - `/sandbox on/off/perfil/...` — Test mode with frozen memory profiles
 
 ---
@@ -99,7 +116,8 @@ Key commands:
 
 ### LLM & Memory
 - The LLM call is centralized in `services/llm.py`.
-- Memory context + few-shots are injected in `get_diana_response()`.
+- Prompt inject order in `get_diana_response()`: base → temporal → memory → **policies** → few-shots → escalation FP → format.
+- Topic policies (`services/knowledge.py`) are mandatory instruction blocks, not few-shots. First-slice distill creates policies only (no auto few-shot).
 - Memory extraction happens in background via `MemoryService`.
 - Be careful with prompt size. Prefer precise context over dumping everything.
 

@@ -163,8 +163,10 @@ async def test_escalation_wins_over_gap(in_memory_training_db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gap_with_policy_match_skips_consult(in_memory_training_db, monkeypatch):
-    """Partial anti-reask (WU2): match exists → no consult; fall through normal save."""
+async def test_gap_with_policy_match_one_regen_no_consult(
+    in_memory_training_db, monkeypatch,
+):
+    """Anti-reask (WU3): match → one regen with policies; no pending_guidance."""
     monkeypatch.setattr(timer_mod, "KNOWLEDGE_GAP_ENABLED", True)
     chat_id = VIP + 3
     gen = 1
@@ -172,14 +174,16 @@ async def test_gap_with_policy_match_skips_consult(in_memory_training_db, monkey
     history[chat_id] = [{"role": "user", "content": "videollamada?"}]
 
     matched = [{"id": 1, "topic": "limites", "policy_summary": "No ofrezcas VL"}]
+    first = _llm_gap_payload(topic="limites", response="tentativo gap")
+    second = ("respuesta con política", 92, "limites", False, "", None)
 
     with (
         patch("asyncio.sleep", new_callable=AsyncMock),
         patch(
             "handlers.timer.get_diana_response",
             new_callable=AsyncMock,
-            return_value=_llm_gap_payload(topic="limites"),
-        ),
+            side_effect=[first, second],
+        ) as mock_llm,
         patch("services.knowledge.match_policies", return_value=matched),
         patch(
             "handlers.callbacks.guidance.notify_diana_guidance",
@@ -195,7 +199,9 @@ async def test_gap_with_policy_match_skips_consult(in_memory_training_db, monkey
         await task
 
     mock_guidance.assert_not_awaited()
+    assert mock_llm.await_count == 2  # original + one regen
     mock_save.assert_called_once()
+    assert mock_save.call_args[0][3] == "respuesta con política"
     assert not pending_guidance
 
 

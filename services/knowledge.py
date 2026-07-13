@@ -1,7 +1,7 @@
 """Topic policies and guidance requests — durable doctrine store.
 
-promo_info-style module-level `db` wire. Schema, CRUD, match, policy block.
-Distill / consult flow land in later work units.
+promo_info-style module-level `db` wire. Schema, CRUD, match, policy block,
+distill_guidance (separate small-schema LLM call).
 """
 from __future__ import annotations
 
@@ -21,6 +21,31 @@ db: sqlite3.Connection | None = None
 _TOPIC_MATCH_SCORE = 100
 _KEYWORD_HIT_SCORE = 10
 _MATCH_TOP_N = 5
+
+# Distill degraded raw summary max length
+_DEGRADED_SUMMARY_MAX = 500
+
+DISTILL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "topic": {"type": "string"},
+        "policy_summary": {"type": "string"},
+        "example_response": {"type": "string"},
+        "keywords": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "priority": {"type": "integer"},
+    },
+    "required": ["topic", "policy_summary", "keywords"],
+    "additionalProperties": False,
+}
+
+
+async def raw_call(*args, **kwargs):
+    """Indirection so unit tests can patch services.knowledge.raw_call."""
+    from services.llm import raw_call as _llm_raw_call
+    return await _llm_raw_call(*args, **kwargs)
 
 
 def _require_db() -> sqlite3.Connection:
@@ -327,3 +352,132 @@ def build_policy_block(policies: list[dict]) -> str:
         if example:
             lines.append(f'    Ejemplo de tono: "{example}"')
     return "\n" + "\n".join(lines) + "\n"
+
+
+def _degraded_distill(
+    *,
+    diana_answer: str,
+    topic_hint: str,
+) -> dict:
+    summary = (diana_answer or "").strip()
+    if len(summary) > _DEGRADED_SUMMARY_MAX:
+        summary = summary[:_DEGRADED_SUMMARY_MAX - 1] + "…"
+    if not summary:
+        summary = "(sin resumen)"
+    return {
+        "topic": (topic_hint or "general").strip() or "general",
+        "policy_summary": summary,
+        "example_response": "",
+        "keywords": [],
+        "priority": GUIDANCE_POLICY_PRIORITY,
+        "degraded": True,
+    }
+
+
+def _parse_distill_payload(raw: str, *, topic_hint: str, diana_answer: str) -> dict:
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return _degraded_distill(diana_answer=diana_answer, topic_hint=topic_hint)
+    if not isinstance(data, dict):
+        return _degraded_distill(diana_answer=diana_answer, topic_hint=topic_hint)
+
+    topic = str(data.get("topic") or topic_hint or "general").strip() or "general"
+    summary = str(data.get("policy_summary") or "").strip()
+    if not summary:
+        return _degraded_distill(diana_answer=diana_answer, topic_hint=topic)
+
+    keywords_raw = data.get("keywords") or []
+    if isinstance(keywords_raw, str):
+        try:
+            keywords_raw = json.loads(keywords_raw)
+        except json.JSONDecodeError:
+            keywords_raw = [keywords_raw]
+    keywords = [str(k).strip() for k in keywords_raw if str(k).strip()]
+
+    example = str(data.get("example_response") or "").strip()
+    try:
+        priority = int(data.get("priority", GUIDANCE_POLICY_PRIORITY))
+    except (TypeError, ValueError):
+        priority = GUIDANCE_POLICY_PRIORITY
+
+    return {
+        "topic": topic,
+        "policy_summary": summary,
+        "example_response": example,
+        "keywords": keywords,
+        "priority": priority,
+        "degraded": False,
+    }
+
+
+async def distill_guidance(
+    gap_question: str,
+    diana_answer: str,
+    context: list | None = None,
+    topic_hint: str = "",
+) -> dict:
+    """Distill Diana's free-text answer into a reusable topic policy.
+
+    Separate small-schema LLM call (not VIP persona). On failure returns a
+    degraded dict with policy_summary = truncated raw answer. Never raises for
+    LLM/network errors. First slice: policy only — no few-shot side effects.
+    """
+    ctx = context or []
+    preview = "\n".join(
+        f"{m.get('role', '?')}: {(m.get('content') or '')[:200]}"
+        for m in ctx[-6:]
+        if isinstance(m, dict)
+    )
+    system = (
+        "Sos un extractor de doctrina operativa. Convertí la respuesta de Diana "
+        "en una política reutilizable (regla vinculante) para un bot de chat VIP.\n"
+        "Respondé ÚNICAMENTE con JSON válido según el schema.\n"
+        "- topic: etiqueta corta en snake_case\n"
+        "- policy_summary: 1–3 oraciones, regla reutilizable (voz de instrucción)\n"
+        "- example_response: cómo respondería Diana en este caso (tono natural)\n"
+        "- keywords: 2–8 palabras/frases que disparen el match\n"
+        "- priority: entero alto (default 100)\n"
+        "No inventes doctrina que no esté en la respuesta de Diana."
+    )
+    user = (
+        f"Tema sugerido: {topic_hint or 'general'}\n"
+        f"Pregunta de zona gris: {gap_question}\n"
+        f"Respuesta de Diana (fuente de verdad):\n{diana_answer}\n\n"
+        f"Contexto reciente:\n{preview or '(vacío)'}"
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    try:
+        content, fail_code, _detail = await raw_call(
+            messages,
+            max_tokens=400,
+            temperature=0.2,
+            response_format={"type": "json_object", "schema": DISTILL_SCHEMA},
+        )
+    except Exception as e:
+        log.warning(f"distill_guidance LLM error: {e}")
+        return _degraded_distill(diana_answer=diana_answer, topic_hint=topic_hint)
+
+    if not content or fail_code:
+        log.info(f"distill_guidance failed ({fail_code}); using degraded raw summary")
+        return _degraded_distill(diana_answer=diana_answer, topic_hint=topic_hint)
+
+    return _parse_distill_payload(
+        content, topic_hint=topic_hint, diana_answer=diana_answer,
+    )
+
+
+def list_policies_filtered(
+    *,
+    topic: str | None = None,
+    include_inactive: bool = False,
+) -> list[dict]:
+    """List policies, optionally filtered by normalized topic substring/equality."""
+    rows = list_policies(include_inactive=include_inactive)
+    if not topic:
+        return rows
+    needle = _normalize_topic(topic)
+    return [r for r in rows if needle in _normalize_topic(r.get("topic"))]

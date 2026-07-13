@@ -67,16 +67,16 @@ Specs: freeze · g: UI · free-text exclusion · persist/re-notify · owner supe
 
 Specs: anti-reask · distill→regen · timeout≡use_draft · inject order · list/deactivate · policy-only · stale gen.
 
-- [ ] 3.1 **RED** inject tests: after memory, before few-shots; empty/inactive omit
-- [ ] 3.2 **GREEN** `get_diana_response`: always match+`build_policy_block`
-- [ ] 3.3 **RED** distill tests: happy→row; fail→degraded raw; no auto few-shot
-- [ ] 3.4 **GREEN** `knowledge.distill_guidance` + answer path saves policy, status `answered`
-- [ ] 3.5 **RED/GREEN** post-answer: fresh gen→regen→shared helper (approval|deliver); stale→no VIP send, notify
-- [ ] 3.6 **RED/GREEN** timer anti-reask: gap+match→one regen, no `pending_guidance`
-- [ ] 3.7 **RED/GREEN** timeout: age>`GUIDANCE_TIMEOUT_HOURS`→`timeout`≡`g:use_draft`; freeze until fire
-- [ ] 3.8 **GREEN** `/politicas [topic]`, `/borrar_politica <id>` soft deactivate
-- [ ] 3.9 **GREEN** `AGENTS.md` fourth flow, `g:`, freeze, flag, prompt order
-- [ ] 3.10 Full suite green
+- [x] 3.1 **RED** inject tests: after memory, before few-shots; empty/inactive omit
+- [x] 3.2 **GREEN** `get_diana_response`: always match+`build_policy_block`
+- [x] 3.3 **RED** distill tests: happy→row; fail→degraded raw; no auto few-shot
+- [x] 3.4 **GREEN** `knowledge.distill_guidance` + answer path saves policy, status `answered`
+- [x] 3.5 **RED/GREEN** post-answer: fresh gen→regen→shared helper (approval|deliver); stale→no VIP send, notify
+- [x] 3.6 **RED/GREEN** timer anti-reask: gap+match→one regen, no `pending_guidance`
+- [x] 3.7 **RED/GREEN** timeout: age>`GUIDANCE_TIMEOUT_HOURS`→`timeout`≡`g:use_draft`; freeze until fire
+- [x] 3.8 **GREEN** `/politicas [topic]`, `/borrar_politica <id>` soft deactivate
+- [x] 3.9 **GREEN** `AGENTS.md` fourth flow, `g:`, freeze, flag, prompt order
+- [x] 3.10 Full suite green
 
 ### Manual (post-WU3)
 

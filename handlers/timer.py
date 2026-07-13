@@ -210,12 +210,26 @@ async def auto_reply(
             )
             matched = knowledge_mod.match_policies(topic, last_user, gap_question)
             if matched:
-                # Partial anti-reask (WU2): match exists → no consult; normal save path
-                # Full one-shot regen with inject is WU3
+                # Anti-reask: one regen with policies injected; never open consult
                 log.info(
-                    f"Gap con política match ({len(matched)}) — sin consulta "
-                    f"para {username}"
+                    f"Gap con política match ({len(matched)}) — un regen "
+                    f"sin consulta para {username}"
                 )
+                if reply_gen.get(chat_id) != gen:
+                    _finish_timer(chat_id)
+                    return
+                regen, r_conf, r_topic, _kg2, _gq2, r_fail = await get_diana_response(
+                    chat_id,
+                    should_abort=lambda: reply_gen.get(chat_id) != gen,
+                )
+                if regen:
+                    response, confidence, topic = regen, r_conf, r_topic
+                else:
+                    log.warning(
+                        f"Anti-reask regen failed for {username} ({r_fail}); "
+                        f"using first draft"
+                    )
+                # Fall through to enter_draft_pipeline — do NOT re-check gap
             else:
                 from state import pending_guidance as _pg
                 gid = open_guidance_consult(

@@ -2,7 +2,7 @@
 
 **Mode**: Strict TDD  
 **Delivery**: auto-chain · stacked-to-main  
-**Current slice**: WU2 Consult + VIP freeze (PR2 → main on PR1)  
+**Current slice**: WU3 Inject + distill/regen + timeout + admin (PR3 → main on PR2)  
 **Date**: 2026-07-13
 
 ## Completed Tasks
@@ -33,79 +33,92 @@
 - [x] 2.10 GREEN owner supersede + recovery re-notify
 - [x] 2.11 Freeze suite + full suite green
 
-### Phase 3 — not started (WU3)
+### Phase 3 — Inject + distill/regen + timeout + admin (WU3) — 10/10
+
+- [x] 3.1 RED inject tests: after memory, before few-shots; empty/inactive omit
+- [x] 3.2 GREEN `get_diana_response` always match+`build_policy_block`
+- [x] 3.3 RED distill tests: happy→row; fail→degraded raw; no auto few-shot
+- [x] 3.4 GREEN `knowledge.distill_guidance` + free-text saves policy, status answered
+- [x] 3.5 RED/GREEN post-answer: fresh gen→regen→enter_draft_pipeline; stale→no VIP send
+- [x] 3.6 RED/GREEN timer anti-reask: gap+match→one regen, no pending_guidance
+- [x] 3.7 RED/GREEN timeout: age > GUIDANCE_TIMEOUT_HOURS → status timeout ≡ use_draft
+- [x] 3.8 GREEN `/politicas [topic]`, `/borrar_politica <id>` soft deactivate
+- [x] 3.9 GREEN `AGENTS.md` fourth flow, `g:`, freeze, flag, prompt order
+- [x] 3.10 Full suite green — **588 passed**
 
 ## TDD Cycle Evidence
 
 | Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
 |------|-----------|-------|------------|-----|-------|-------------|----------|
 | 1.1–1.9 | (WU1 prior) | Unit | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 2.1 | `tests/unit/test_guidance_state.py` | Unit | ✅ runtime baseline | ✅ ImportError | ✅ via 2.2 | ✅ 5 cases | ✅ Clean |
-| 2.2 | same | Unit | ✅ | ✅ 2.1 first | ✅ 5 passed | ✅ snap/load/active | ✅ Clean |
-| 2.3 | `tests/unit/test_guidance_callbacks.py` | Unit | N/A (new) | ✅ Written | ✅ via 2.4 | ✅ answer/skip/use_draft/free-text/exclusion/auth | ✅ Clean |
-| 2.4 | guidance.py + router + __init__ | Unit | ✅ | ✅ 2.3 first | ✅ callbacks green | ✅ multi actions | ✅ Clean |
-| 2.5 | `tests/unit/test_timer_guidance.py` | Unit | ✅ timer baseline | ✅ Written | ✅ via 2.6–2.7 | ✅ gap/flag/esc/match | ✅ Clean |
-| 2.6 | timer `enter_draft_pipeline` | Unit | ✅ | ✅ via use_draft tests | ✅ | ✅ supervised+auto | ✅ Extract helper |
-| 2.7 | timer gap branch | Unit | ✅ | ✅ 2.5 first | ✅ | ✅ match skip consult | ✅ Clean |
-| 2.8 | `test_guidance_freeze.py` reengage | Unit | ✅ reengage | ✅ Written | ✅ | ✅ block + no-block | ➖ |
-| 2.9 | freeze + data_pause clear | Unit | ✅ | ✅ Written | ✅ | ✅ pause clear | ➖ |
-| 2.10 | freeze supersede + recovery | Unit | ✅ recovery | ✅ Written | ✅ | ✅ both paths | ✅ Clean |
-| 2.11 | full suite | Unit | ✅ | ➖ verify | ✅ **571 passed** | ➖ | ➖ |
+| 2.1–2.11 | (WU2 prior) | Unit | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 3.1 | `tests/unit/test_policy_inject.py` | Unit | ✅ knowledge+llm baseline | ✅ Written (policy missing) | ✅ via 3.2 | ✅ order + empty + inactive | ✅ Clean |
+| 3.2 | `services/llm.py` inject | Unit | ✅ | ✅ 3.1 first | ✅ 3 inject tests pass | ✅ 3 cases | ✅ try/except skip |
+| 3.3 | `tests/unit/test_distill_guidance.py` | Unit | N/A (new API) | ✅ Written (no distill) | ✅ via 3.4 | ✅ happy/fail/invalid/no-fewshot | ✅ Clean |
+| 3.4 | `knowledge.distill_guidance` + answer path | Unit | ✅ | ✅ 3.3 first | ✅ distill+answer green | ✅ multi paths | ✅ degraded helper |
+| 3.5 | `tests/unit/test_guidance_answer_regen.py` | Unit | ✅ callbacks | ✅ Written | ✅ Passed | ✅ supervised/auto/stale/degraded | ✅ Clean |
+| 3.6 | `tests/unit/test_timer_guidance.py` | Unit | ✅ timer | ✅ Updated anti-reask | ✅ 2 LLM calls + regen text | ✅ match vs no-match | ✅ Clean |
+| 3.7 | `tests/unit/test_guidance_timeout.py` | Unit | N/A (new) | ✅ Written | ✅ Passed | ✅ timeout/fresh/stale | ✅ Clean |
+| 3.8 | `tests/unit/test_admin_politicas.py` | Unit | ✅ admin | ✅ Written | ✅ Passed | ✅ list/filter/deactivate | ➖ |
+| 3.9 | `AGENTS.md` | Docs | N/A | ➖ docs | ✅ | ➖ | ➖ |
+| 3.10 | full suite | Unit | ✅ | ➖ verify | ✅ **588 passed** | ➖ | ➖ |
 
 ### Test Summary
 
-- **WU2 new unit tests**: guidance_state (5) + guidance_callbacks (13) + timer_guidance (5) + freeze (7) ≈ 30
-- **Full suite**: **571 passed**, 1 pre-existing RuntimeWarning (unawaited auto_reply in unrelated test)
+- **WU3 new/updated unit tests**: policy_inject (3) + distill (4) + answer_regen (4) + timeout (3) + admin (3) + timer anti-reask update + free-text callback update ≈ 17+
+- **Full suite**: **588 passed**, 1 pre-existing RuntimeWarning (unawaited auto_reply in unrelated test)
 - **Layers used**: Unit only
 - **Approval tests**: None — no pure-refactor-only tasks
-- **Pure / shared helpers**: `enter_draft_pipeline`, `open_guidance_consult`, `resolve_guidance_request`, `_has_pending_guidance`
+- **Pure / shared helpers**: `distill_guidance`, `_degraded_distill`, `build_policy_block` inject, `process_guidance_timeouts`, `list_policies_filtered`
 
-## Files Changed (WU2)
+## Files Changed (WU3)
 
 | File | Action | What Was Done |
 |------|--------|---------------|
-| `state.py` | Modified | `pending_guidance` persist; `awaiting_guidance_answer` runtime-only |
-| `handlers/callbacks/guidance.py` | Created | notify, g: handlers, free-text, supersede, open consult |
-| `handlers/callbacks/__init__.py` | Modified | Route `g:`; export guidance handlers |
-| `handlers/callbacks/approval.py` | Modified | note/fix clear `awaiting_guidance_answer` |
-| `handlers/router.py` | Modified | admin_note → guidance → note → correction |
-| `handlers/timer.py` | Modified | `enter_draft_pipeline`; gap branch after escalation |
-| `handlers/recovery.py` | Modified | Re-notify open guidances on startup |
-| `handlers/business.py` | Modified | Owner inbound → supersede guidance |
-| `services/knowledge.py` | Modified | `resolve_guidance_request` |
-| `services/reengagement.py` | Modified | `_has_pending_guidance` block |
-| `services/data_pause.py` | Modified | clear pending_guidance |
-| `services/sandbox.py` | Modified | clear pending_guidance on reset |
-| `tests/conftest.py` | Modified | `in_memory_training_db` wires knowledge.db |
-| `tests/unit/test_guidance_state.py` | Created | Persist/load tests |
-| `tests/unit/test_guidance_callbacks.py` | Created | g: + free-text + exclusion |
-| `tests/unit/test_timer_guidance.py` | Created | Gap branch + freeze |
-| `tests/unit/test_guidance_freeze.py` | Created | Reengage/owner/recovery/sandbox |
-| `openspec/.../tasks.md` | Modified | 2.1–2.11 checked |
+| `services/llm.py` | Modified | Policy match+inject after memory, before few-shots |
+| `services/knowledge.py` | Modified | `distill_guidance`, DISTILL_SCHEMA, degraded path, `list_policies_filtered`, `raw_call` indirection |
+| `handlers/callbacks/guidance.py` | Modified | Free-text distill→policy→regen; timeout scanner; policy_id on resolve |
+| `handlers/timer.py` | Modified | Anti-reask one-shot regen on policy match |
+| `handlers/router.py` | Modified | Start guidance timeout scheduler |
+| `handlers/admin_auth.py` | Modified | `/politicas`, `/borrar_politica` + ayuda |
+| `AGENTS.md` | Modified | Fourth flow, g:, freeze, flag, prompt order, admin cmds |
+| `tests/unit/test_policy_inject.py` | Created | Inject order tests |
+| `tests/unit/test_distill_guidance.py` | Created | Distill happy/fail/no-fewshot |
+| `tests/unit/test_guidance_answer_regen.py` | Created | Post-answer regen + stale |
+| `tests/unit/test_guidance_timeout.py` | Created | Timeout ≡ use_draft |
+| `tests/unit/test_admin_politicas.py` | Created | Admin list/deactivate |
+| `tests/unit/test_timer_guidance.py` | Modified | Anti-reask asserts one regen |
+| `tests/unit/test_guidance_callbacks.py` | Modified | Free-text expects distill+regen |
+| `openspec/.../tasks.md` | Modified | 3.1–3.10 checked |
 
 ## Deviations from Design
 
-1. **Free-text answer (WU2 partial)**: Distill+regen deferred to WU3. On free-text, WU2 stores `diana_answer_raw`, marks status `answered`, then re-enters **use_draft-equivalent** path with the original tentative draft so VIP is not left frozen. WU3 will replace this with distill → policy → regen → normal path.
-2. **Anti-reask partial**: When `match_policies` non-empty, timer does **not** open consult and falls through to normal save path (no one-shot regen with inject yet — WU3).
-3. **Sandbox gap**: When `sandbox`/synthetic examples, gap branch does not open real consult (no production pollution); falls through normal path.
+None material — implementation matches design locks:
+- Distill is separate small-schema LLM call; fail → degraded raw summary
+- Free-text upgraded from use_draft to distill → policy → regen → enter_draft_pipeline
+- Inject order: base→temporal→memory→policies→few_shots→escalation_fp→format
+- Timeout uses stored draft via enter_draft_pipeline (same as use_draft)
+- First slice: no auto few-shot from distill
+- VIP freeze remains until resolution/timeout
+- Timeout scanner is a dedicated interval task (not only piggybacked on reengage) so it runs even when reengagement is disabled
 
 ## Issues Found
 
-None blocking. Pre-existing RuntimeWarning about unawaited `auto_reply` still present in suite (unrelated).
+None blocking. Pre-existing RuntimeWarning about unawaited `auto_reply` still present (unrelated).
 
 ## Remaining Tasks
 
-- [ ] Phase 3 WU3 (3.1–3.10) — inject + distill/regen + timeout + admin
+None — all phases complete. Ready for `sdd-verify`.
 
 ## Workload / PR Boundary
 
 - Mode: stacked PR slice (stacked-to-main)
-- Current work unit: **WU2 Consult + VIP freeze**
-- Branch: `feat/gray-zone-guidance-wu2` (stacked on WU1 tip)
-- Boundary: pending_guidance, g: UI, timer freeze, reengage/recovery/owner/sandbox; free-text capture without distill
-- Out of scope this PR: policy inject, distill LLM, timeout worker, `/politicas`, full anti-reask regen
-- Estimated review budget impact: medium–high but autonomous WU2 slice
+- Current work unit: **WU3 Inject + distill/regen + timeout + admin**
+- Branch: `feat/gray-zone-guidance-wu3` (stacked on WU2 tip `feat/gray-zone-guidance-wu2`)
+- Boundary: policy inject, distill LLM, free-text regen, anti-reask regen, 12h timeout worker, `/politicas`, AGENTS.md
+- Out of scope: vector search, auto few-shot distill, escalation UX redesign
+- Estimated review budget impact: medium–high but autonomous WU3 slice
 
 ## Status
 
-**WU1 9/9 + WU2 11/11 complete.** Ready for next batch: `sdd-apply` WU3.
+**WU1 9/9 + WU2 11/11 + WU3 10/10 complete.** Ready for `sdd-verify`.

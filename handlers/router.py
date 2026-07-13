@@ -116,5 +116,7 @@ async def _post_init(app: Application) -> None:
     _load_connections_state()
     await recover_runtime_on_startup(app.bot)
     from services import history_backfill, reengagement
+    from handlers.callbacks.guidance import start_timeout_scheduler
     history_backfill.start_scheduler(app)
     reengagement.start_scheduler(app)
+    start_timeout_scheduler(app)
